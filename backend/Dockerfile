@@ -2,9 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies (git, svn for connectors)
+# Install system dependencies (git, svn, git-svn, git-lfs for connectors and LFS healing)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git subversion \
+    git git-svn subversion git-lfs \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -17,8 +17,8 @@ COPY . /app
 # Create data directory
 RUN mkdir -p /app/data
 
-# Make entrypoint executable
-RUN chmod +x /app/entrypoint.sh
+# Make entrypoint executable (strip Windows CRLF if present)
+RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Expose port
 EXPOSE 8000

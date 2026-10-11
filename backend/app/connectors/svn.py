@@ -158,8 +158,13 @@ class SvnConnector(SourceConnector):
             if size == 0:
                 size = commit_count * 50000  # rough estimate
             
+            parts = [p for p in repo_url.rstrip('/').split('/') if p]
+            clean_repo_name = parts[-1] if parts else "svn-repo"
+            if clean_repo_name.lower() in ["svn", "trunk", "repo"] and len(parts) >= 2:
+                clean_repo_name = parts[-2]
+
             return RepoDescriptor(
-                name=repo_url.split('/')[-1],
+                name=clean_repo_name,
                 source_type="svn",
                 size=size,
                 commit_count=commit_count,
@@ -206,12 +211,15 @@ class LocalSvnConnector(SvnConnector):
     
     def __init__(self, repo_path: str):
         import os
-        # If repo_path is absolute, use it directly; otherwise resolve relative to SAMPLES_DIR
-        if os.path.isabs(repo_path):
-            abs_path = Path(repo_path).resolve()
+        clean_path = str(repo_path)
+        if clean_path.startswith("file://"):
+            clean_path = clean_path[7:]
+        # If clean_path is absolute, use it directly; otherwise resolve relative to SAMPLES_DIR
+        if os.path.isabs(clean_path):
+            abs_path = Path(clean_path).resolve()
         else:
             samples_dir = os.environ.get("SAMPLES_DIR", "/app/samples")
-            abs_path = (Path(samples_dir) / repo_path).resolve()
+            abs_path = (Path(samples_dir) / clean_path).resolve()
         if not abs_path.exists():
             raise ValueError(f"SVN repository path does not exist: {abs_path}")
         if not abs_path.is_dir():

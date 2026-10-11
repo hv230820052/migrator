@@ -28,6 +28,7 @@ from .agents.curator import CuratorAgent
 from .agents.cartographer import CartographerAgent
 from .agents.gates import GatesAgent, GateType, GateStatus
 from .agents.executor import ExecutorAgent, MigrationResult
+from .agents.prover import ProverAgent
 from .cascade.router import DecisionRouter, get_router
 
 # Configure logging
@@ -99,25 +100,32 @@ async def emit_event(run_id: int, event_data: dict):
         **event_data
     }
     
-    # Store in DB (background)
-    db = SessionLocal()
+    # Broadcast to WebSocket first (<1s latency per G-13)
     try:
-        db_event = Event(
-            run_id=run_id,
-            agent=event_data.get("agent"),
-            action=event_data.get("action"),
-            reason=event_data.get("reason"),
-            tier=event_data.get("tier", "T0")
-        )
-        db.add(db_event)
-        db.commit()
-    except Exception as e:
-        logger.warning(f"Failed to store event: {e}")
-    finally:
-        db.close()
-    
-    # Broadcast to WebSocket
-    await manager.send_event(str(run_id), event)
+        await manager.send_event(str(run_id), event)
+    except Exception:
+        pass
+        
+    # Store in DB with retry
+    for attempt in range(3):
+        db = SessionLocal()
+        try:
+            db_event = Event(
+                run_id=run_id,
+                agent=event_data.get("agent"),
+                action=event_data.get("action"),
+                reason=event_data.get("reason"),
+                tier=event_data.get("tier", "T0")
+            )
+            db.add(db_event)
+            db.commit()
+            break
+        except Exception as e:
+            if attempt == 2:
+                logger.debug(f"Event store skipped after retries: {e}")
+            await asyncio.sleep(0.05)
+        finally:
+            db.close()
 
 # Pydantic models for OpenAPI
 class SourceCreate(BaseModel):
@@ -183,6 +191,22 @@ async def create_source(source: SourceCreate, db: Session = Depends(get_db)):
     db.refresh(db_source)
     
     return ConnectionReportResponse(**report.__dict__)
+
+@app.get("/api/sources")
+async def list_sources(db: Session = Depends(get_db)):
+    """GET /api/sources - List all connected sources"""
+    sources = db.query(Source).all()
+    return [
+        {
+            "id": s.id,
+            "type": s.type,
+            "endpoint": s.endpoint,
+            "status": s.status,
+            "readable_scope": s.readable_scope,
+            "created_at": s.created_at.isoformat() if s.created_at else None
+        }
+        for s in sources
+    ]
 
 @app.get("/api/catalog", response_model=List[RepoResponse])
 async def get_catalog(db: Session = Depends(get_db)):
@@ -292,19 +316,22 @@ async def events_stream(websocket: WebSocket, run_id: int):
 async def get_fidelity(run_id: int, db: Session = Depends(get_db)):
     """GET /api/runs/{id}/fidelity - Report data (Phase 6)"""
     logger.info(f"D-08: R4 - FR-08: Fidelity request for run {run_id}")
-    return {"commit_parity": 0, "branch_parity": 0, "tag_checksums": [], "author_coverage": 0}
+    prover = ProverAgent(db)
+    return prover.verify_fidelity(run_id)
 
 @app.get("/api/runs/{run_id}/certificate")
 async def get_certificate(run_id: int, db: Session = Depends(get_db)):
     """GET /api/runs/{id}/certificate - Download certificate (Phase 6)"""
     logger.info(f"D-08: R4 - FR-08: Certificate request for run {run_id}")
-    return {"certificate": "not-yet-generated", "hash": "pending"}
+    prover = ProverAgent(db)
+    return prover.generate_certificate(run_id)
 
 @app.get("/api/runs/{run_id}/beforeafter")
 async def get_beforeafter(run_id: int, db: Session = Depends(get_db)):
     """GET /api/runs/{id}/beforeafter - Split-view comparison data (Phase 6)"""
     logger.info(f"D-08: R1 - FR-08: Before/after request for run {run_id}")
-    return {"before": {}, "after": {}}
+    prover = ProverAgent(db)
+    return prover.get_before_after(run_id)
 
 # Phase 1: Discovery endpoints
 
@@ -561,13 +588,21 @@ async def health():
 
 # Helper
 def _create_connector(source_type: str, endpoint: str, credentials_ref: Optional[str]):
-    """Create connector instance"""
+    """Create connector instance dynamically"""
     if source_type == "svn":
+        username, password = "", ""
+        if credentials_ref and ":" in credentials_ref:
+            parts = credentials_ref.split(":", 1)
+            username, password = parts[0], parts[1]
+        elif credentials_ref:
+            username = credentials_ref
+        if endpoint.startswith(("http://", "https://", "svn://", "svn+ssh://")):
+            return SvnConnector(endpoint, username, password)
         return LocalSvnConnector(endpoint)
     elif source_type == "localgit":
         return LocalGitConnector(endpoint)
     elif source_type == "github":
-        token = os.environ.get("GITHUB_PAT", "")
+        token = credentials_ref or os.environ.get("GITHUB_PAT", "")
         if not token:
             return None
         return GitHubConnector(endpoint, token)

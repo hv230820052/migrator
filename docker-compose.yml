@@ -9,6 +9,7 @@ services:
       - DEMO_MODE=true
       - SAMPLES_DIR=/app/samples
     volumes:
+      - ./backend:/app
       - ./samples:/app/samples:ro
       - provenance-db:/data/db
 
@@ -20,6 +21,7 @@ services:
       - "3000:3000"
     volumes:
       - ./frontend:/app
+      - /app/node_modules
     depends_on:
       - backend
 

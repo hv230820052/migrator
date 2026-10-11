@@ -71,7 +71,8 @@ class ScoutAgent:
                     large_files=1 if repo_desc.large_file_flag else 0
                 )
                 self.db.add(repo)
-                self.db.flush()  # Get ID
+                self.db.commit()
+                self.db.refresh(repo)
                 
                 repo_desc_dict = asdict(repo_desc)
                 repo_desc_dict["db_id"] = repo.id
@@ -95,20 +96,26 @@ class ScoutAgent:
         return all_repos
     
     def _create_connector(self, source: Source):
-        """Create appropriate connector for source type"""
+        """Create appropriate connector dynamically for source type"""
         if source.type == "svn":
+            username, password = "", ""
+            if source.credentials_ref and ":" in source.credentials_ref:
+                parts = source.credentials_ref.split(":", 1)
+                username, password = parts[0], parts[1]
+            elif source.credentials_ref:
+                username = source.credentials_ref
+            if source.endpoint.startswith(("http://", "https://", "svn://", "svn+ssh://")):
+                return SvnConnector(source.endpoint, username, password)
             return LocalSvnConnector(source.endpoint)
         elif source.type == "localgit":
             return LocalGitConnector(source.endpoint)
         elif source.type == "github":
-            # Get token from config/env
             import os
-            token = os.environ.get("GITHUB_PAT", "")
+            token = source.credentials_ref or os.environ.get("GITHUB_PAT", "")
             if not token:
                 return None
             return GitHubConnector(source.endpoint, token)
         elif source.type == "tfs":
-            # TFS sample connector - use endpoint from source
             return TfsSampleConnector(source.endpoint)
         return None
 

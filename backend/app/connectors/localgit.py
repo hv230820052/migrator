@@ -12,11 +12,15 @@ class LocalGitConnector(SourceConnector):
     """Local Git connector - scans filesystem for repositories"""
     
     def __init__(self, root_path: str):
-        # Resolve relative to SAMPLES_DIR (container path)
         import os
-        samples_dir = os.environ.get("SAMPLES_DIR", "/app/samples")
-        self.root_path = Path(samples_dir) / root_path
-        self.root_path = self.root_path.resolve()
+        clean_path = str(root_path)
+        if clean_path.startswith("file://"):
+            clean_path = clean_path[7:]
+        if os.path.isabs(clean_path):
+            self.root_path = Path(clean_path).resolve()
+        else:
+            samples_dir = os.environ.get("SAMPLES_DIR", "/app/samples")
+            self.root_path = (Path(samples_dir) / clean_path).resolve()
     
     def validate(self) -> ConnectionReport:
         """Validate local path exists and is readable"""
@@ -35,9 +39,12 @@ class LocalGitConnector(SourceConnector):
                 fixes=["Provide a directory path"]
             )
         
-        # Check for git repos
+        # Check for direct git repo or child git repos
+        is_direct = (self.root_path / ".git").exists() or (self.root_path / "HEAD").exists()
         git_dirs = list(self.root_path.rglob(".git"))
-        if not git_dirs:
+        repo_count = (1 if is_direct else 0) + len(git_dirs)
+        
+        if repo_count == 0:
             return ConnectionReport(
                 status="partial",
                 readable_scope=f"Local Git: {self.root_path}",
@@ -47,7 +54,7 @@ class LocalGitConnector(SourceConnector):
         
         return ConnectionReport(
             status="connected",
-            readable_scope=f"Local Git: {self.root_path} ({len(git_dirs)} repos found)",
+            readable_scope=f"Local Git: {self.root_path} ({repo_count} repos found)",
             issues=[],
             fixes=[]
         )
@@ -55,11 +62,17 @@ class LocalGitConnector(SourceConnector):
     def discover(self) -> List[RepoDescriptor]:
         """Discover all Git repositories under root_path"""
         repos = []
-        git_dirs = list(self.root_path.rglob(".git"))
+        if (self.root_path / ".git").exists() or (self.root_path / "HEAD").exists():
+            direct_info = self._get_repo_metadata(self.root_path)
+            if direct_info:
+                repos.append(direct_info)
         
+        git_dirs = list(self.root_path.rglob(".git"))
         for git_dir in git_dirs:
             try:
                 repo_path = git_dir.parent
+                if repo_path == self.root_path:
+                    continue  # already added
                 repo_info = self._get_repo_metadata(repo_path)
                 if repo_info:
                     repos.append(repo_info)

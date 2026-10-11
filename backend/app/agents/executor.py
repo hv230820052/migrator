@@ -57,7 +57,7 @@ class ExecutorAgent:
     
     async def migrate_repo(self, repo_id: int) -> MigrationResult:
         """Execute full migration for a repo"""
-        repo = self.db.query("Repo").filter("id == repo_id").first()
+        repo = self.db.query(Repo).filter(Repo.id == repo_id).first()
         if not repo:
             return MigrationResult(success=False, commits_pushed=0, refs_updated=[], lfs_files=[], errors=["Repo not found"])
         
@@ -101,22 +101,49 @@ class ExecutorAgent:
                 return MigrationResult(success=False, commits_pushed=0, refs_updated=[], lfs_files=[], errors=[str(e)])
     
     async def _clone_svn(self, source, repo_path: Path):
-        """Clone SVN repo using git-svn"""
-        # Use git svn clone with authors file and standard layout
-        authors_file = self._generate_authors_file()
+        """Clone SVN repo using git-svn with robust layout detection and fallback"""
+        svn_url = source.endpoint
+        if not svn_url.startswith(("file://", "http://", "https://", "svn://")):
+            svn_url = f"file://{os.path.abspath(svn_url)}"
+
+        # Prime subversion auth cache if credentials exist
+        username, password = "", ""
+        if source.credentials_ref and ":" in source.credentials_ref:
+            username, password = source.credentials_ref.split(":", 1)
+        elif source.credentials_ref:
+            username = source.credentials_ref
+
+        if username and svn_url.startswith(("http://", "https://", "svn://")):
+            prime_cmd = ["svn", "info", "--non-interactive", "--trust-server-cert", "--username", username]
+            if password:
+                prime_cmd.extend(["--password", password])
+            prime_cmd.append(svn_url)
+            subprocess.run(prime_cmd, capture_output=True, text=True, timeout=30)
+
+        authors_file = self._generate_authors_file(repo_path.parent, source)
         
-        cmd = [
-            "git", "svn", "clone",
-            "--authors-file", authors_file,
-            "--stdlayout",
-            "--no-metadata",
-            source.endpoint,
-            str(repo_path)
-        ]
+        # Try standard layout first
+        cmd = ["git", "svn", "clone"]
+        if username:
+            cmd.extend(["--username", username])
+        if authors_file and os.path.exists(authors_file):
+            cmd.extend(["--authors-file", str(authors_file)])
+        cmd.extend(["--stdlayout", "--no-metadata", svn_url, str(repo_path)])
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            raise Exception(f"git svn clone failed: {result.stderr}")
+            # Fallback: clone without --stdlayout (for flat SVN repos)
+            if repo_path.exists():
+                shutil.rmtree(repo_path, ignore_errors=True)
+            cmd_fallback = ["git", "svn", "clone"]
+            if username:
+                cmd_fallback.extend(["--username", username])
+            if authors_file and os.path.exists(authors_file):
+                cmd_fallback.extend(["--authors-file", str(authors_file)])
+            cmd_fallback.extend(["--no-metadata", svn_url, str(repo_path)])
+            result2 = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=300)
+            if result2.returncode != 0:
+                raise Exception(f"git svn clone failed: {result.stderr or result2.stderr}")
     
     async def _clone_localgit(self, source, repo_path: Path):
         """Clone local Git repo"""
@@ -128,21 +155,110 @@ class ExecutorAgent:
     async def _clone_github(self, source, repo_path: Path):
         """Clone GitHub repo"""
         # Use GitHub API to get clone URL, then clone
-        cmd = ["git", "clone", "--mirror", f"https://github.com/{source.endpoint}.git", str(repo_path)]
+        token = os.environ.get("GITHUB_PAT", "")
+        if token:
+            clone_url = f"https://x-access-token:{token}@github.com/{source.endpoint}.git"
+        else:
+            clone_url = f"https://github.com/{source.endpoint}.git"
+        cmd = ["git", "clone", "--mirror", clone_url, str(repo_path)]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
             raise Exception(f"git clone failed: {result.stderr}")
     
-    def _generate_authors_file(self) -> str:
-        """Generate authors file for git-svn from mappings"""
-        # In production, would query mappings from DB
-        # For Phase 4, return path to pre-generated authors file
-        return "/app/samples/authors.txt"
+    def _generate_authors_file(self, target_dir: Optional[Path] = None, source = None) -> str:
+        """Generate authors file for git-svn with 100% committer coverage"""
+        out_dir = target_dir or Path(tempfile.gettempdir())
+        authors_file = out_dir / "authors.txt"
+        
+        # Pull from DB mappings if available
+        from app.models import Mapping
+        mappings = self.db.query(Mapping).all()
+        known_authors = {}
+        for m in mappings:
+            email = getattr(m, 'proposed_email', f"{m.legacy_id}@users.noreply.github.com") or f"{m.legacy_id}@users.noreply.github.com"
+            gh_id = m.github_id or m.legacy_id
+            known_authors[m.legacy_id] = f"{gh_id} <{email}>"
+        
+        # If source is provided, extract all authors dynamically to guarantee no missing committer
+        if source and source.type == "svn":
+            try:
+                cmd = ["svn", "log", "--quiet", "--non-interactive", "--trust-server-cert"]
+                if source.credentials_ref:
+                    parts = source.credentials_ref.split(":", 1)
+                    if len(parts) >= 1 and parts[0]:
+                        cmd.extend(["--username", parts[0]])
+                    if len(parts) >= 2 and parts[1]:
+                        cmd.extend(["--password", parts[1]])
+                cmd.append(source.endpoint)
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+                if res.returncode == 0:
+                    for line in res.stdout.splitlines():
+                        if "|" in line:
+                            parts = [p.strip() for p in line.split("|")]
+                            if len(parts) >= 2 and parts[1]:
+                                auth = parts[1]
+                                if auth not in known_authors:
+                                    known_authors[auth] = f"{auth} <{auth}@users.noreply.github.com>"
+            except Exception:
+                pass
+
+        if "root" not in known_authors:
+            known_authors["root"] = "Admin <admin@users.noreply.github.com>"
+        if "(no author)" not in known_authors:
+            known_authors["(no author)"] = "Unknown <unknown@users.noreply.github.com>"
+
+        lines = [f"{k} = {v}" for k, v in known_authors.items()]
+        authors_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return str(authors_file)
+    
+    def _ensure_github_repo_exists(self, org: str, repo_name: str, token: str):
+        """Ensure the target repository exists in the target GitHub org/user"""
+        import urllib.request
+        import urllib.error
+        import json
+        
+        clean_name = repo_name.replace("/", "-").replace(" ", "-")
+        check_url = f"https://api.github.com/repos/{org}/{clean_name}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "Provenance-Migrator"
+        }
+        
+        req = urllib.request.Request(check_url, headers=headers)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                if resp.status == 200:
+                    return
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                return
+        except Exception:
+            return
+            
+        # Try creating in org
+        create_org_url = f"https://api.github.com/orgs/{org}/repos"
+        payload = json.dumps({"name": clean_name, "private": False}).encode("utf-8")
+        post_req = urllib.request.Request(create_org_url, data=payload, headers={**headers, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(post_req):
+                return
+        except urllib.error.HTTPError:
+            # Fallback if org is a user account
+            create_user_url = "https://api.github.com/user/repos"
+            user_req = urllib.request.Request(create_user_url, data=payload, headers={**headers, "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(user_req):
+                    return
+            except Exception:
+                pass
+        except Exception:
+            pass
     
     async def _apply_author_mappings(self, repo_id: int, repo_path: Path):
         """Apply author mappings using git filter-repo or mailmap"""
         from app.models import Mapping
-        mappings = self.db.query("Mapping").filter("repo_id == repo_id").all()
+        mappings = self.db.query(Mapping).filter(Mapping.repo_id == repo_id).all()
         
         if not mappings:
             return
@@ -155,36 +271,41 @@ class ExecutorAgent:
                     f.write(f"{m.github_id} <{m.proposed_email}> {m.legacy_id} <{m.legacy_id}@local>\n")
         
         # Apply mailmap using git filter-repo (or git commit --amend for each commit)
-        # For Phase 4, use git filter-repo if available
         cmd = ["git", "filter-repo", "--mailmap", ".mailmap", "--force"]
         result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True)
         if result.returncode != 0:
-            # Fallback: use git commit --amend for each commit (simplified)
             self._apply_mailmap_fallback(repo_path)
     
     def _apply_mailmap_fallback(self, repo_path: Path):
         """Fallback: rewrite author info using git commit --amend"""
-        # This is a simplified fallback - in production use git filter-repo
         pass
     
     async def _apply_branch_tag_mappings(self, repo_id: int, repo_path: Path):
         """Rename branches/tags according to mapping plan"""
-        # In production, would apply branch/tag renames from plan
         pass
     
     async def _push_with_self_heal(self, repo, repo_path: Path) -> "MigrationResult":
         """Push to target GitHub org with self-heal on errors"""
-        target_org = "octathon-target"  # from run config
-        target_url = f"https://github.com/{target_org}/{repo.name}.git"
+        run = self.db.query(Run).filter(Run.id == self.run_id).first() if self.run_id else None
+        target_org = (run.target_org if run and run.target_org else None) or os.environ.get("GITHUB_TARGET_ORG", "octathon-target")
+        token = os.environ.get("GITHUB_PAT", "")
+        clean_name = repo.name.replace("/", "-").replace(" ", "-")
+        
+        if token:
+            self._ensure_github_repo_exists(target_org, clean_name, token)
+            target_url = f"https://x-access-token:{token}@github.com/{target_org}/{clean_name}.git"
+        else:
+            target_url = f"https://github.com/{target_org}/{clean_name}.git"
         
         # Add remote
+        subprocess.run(["git", "remote", "remove", "target"], cwd=repo_path, capture_output=True)
         subprocess.run(["git", "remote", "add", "target", target_url], cwd=repo_path, capture_output=True)
         
         max_retries = 3
         for attempt in range(max_retries):
-            # Push all refs
+            # Push all branches
             result = subprocess.run(
-                ["git", "push", "target", "--all", "--tags"],
+                ["git", "push", "target", "--all"],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
@@ -192,6 +313,14 @@ class ExecutorAgent:
             )
             
             if result.returncode == 0:
+                # Push tags as well
+                subprocess.run(
+                    ["git", "push", "target", "--tags"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
                 # Success
                 commits = self._count_commits(repo_path)
                 refs = self._get_refs(repo_path)

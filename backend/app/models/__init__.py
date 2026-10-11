@@ -3,7 +3,7 @@ SQLAlchemy models - Phase 0/1
 """
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Boolean, 
-    ForeignKey, JSON, Float, create_engine
+    ForeignKey, JSON, Float, create_engine, event
 )
 from sqlalchemy.orm import relationship, declarative_base, sessionmaker
 from datetime import datetime
@@ -14,11 +14,20 @@ Base = declarative_base()
 # Create engine and session - use absolute path
 db_path = Path(__file__).parent.parent.parent / "data" / "provenance.db"
 db_path.parent.mkdir(parents=True, exist_ok=True)
-# Use absolute path with URI mode for proper locking
+# Use absolute path with URI mode and WAL for proper concurrent locking
 engine = create_engine(
     f"sqlite:///{db_path.resolve()}", 
-    connect_args={"check_same_thread": False}
+    connect_args={"check_same_thread": False, "timeout": 60}
 )
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA busy_timeout=60000")
+    cursor.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():

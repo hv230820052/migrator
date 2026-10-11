@@ -7,6 +7,7 @@ import re
 import hashlib
 import base64
 import os
+import asyncio
 from math import log2
 from typing import List, Dict, Any, Optional, Tuple
 from app.models import Repo, Finding
@@ -47,6 +48,21 @@ class CuratorAgent:
     def __init__(self, db_session, event_emitter=None):
         self.db = db_session
         self.event_emitter = event_emitter
+
+    def _emit(self, run_id: int, event_data: dict):
+        """Safely emit event whether emitter is sync or async"""
+        if not self.event_emitter:
+            return
+        try:
+            res = self.event_emitter(run_id, event_data)
+            if asyncio.iscoroutine(res):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(res)
+                except RuntimeError:
+                    asyncio.run(res)
+        except Exception:
+            pass
     
     def _calculate_entropy(self, s: str) -> float:
         """Calculate Shannon entropy of string"""
@@ -166,110 +182,157 @@ class CuratorAgent:
         return secret[:preview_chars] + "*" * (len(secret) - preview_chars * 2) + secret[-preview_chars:]
     
     def scan_repo(self, repo: Repo, repo_descriptor: RepoDescriptor) -> List[Finding]:
-        """Scan repository for secrets and other findings"""
+        """Scan repository for secrets, oversized files, unmapped authors, and dead branches dynamically"""
+        import subprocess
         findings = []
         
-        # For Phase 2, we scan the sample corpus files directly
-        # In production, this would use the connector to read repo history
+        # 1. Determine scan root dynamically from repository source
+        scan_root = None
+        temp_scan_dir = None
+        endpoint = (repo.source.endpoint if repo.source else "").strip()
         
-        # Determine scan path based on source type
-        if repo.source and repo.source.type == "svn":
-            scan_root = f"/app/samples/svn/messy-svn/repo"
-        elif repo.source and repo.source.type == "localgit":
-            scan_root = f"/app/samples/localgit/dirty-local"
-        elif repo.source and repo.source.type == "github":
-            # GitHub scanning would use API - skip for Phase 2
-            return findings
-        elif repo.source and repo.source.type == "tfs":
-            return findings
-        else:
-            return findings
-        
-        # Walk files and scan
-        for root, dirs, files in os.walk(scan_root):
-            for file in files:
-                file_path = os.path.join(root, file)
-                rel_path = os.path.relpath(file_path, scan_root)
-                
-                try:
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
+        if endpoint and os.path.exists(endpoint) and os.path.isdir(endpoint):
+            scan_root = endpoint
+        elif os.path.exists(f"/app/data/{repo.name}"):
+            scan_root = f"/app/data/{repo.name}"
+        elif os.path.exists(f"/app/samples/{repo.source.type if repo.source else 'svn'}/{repo.name}/repo"):
+            scan_root = f"/app/samples/{repo.source.type if repo.source else 'svn'}/{repo.name}/repo"
+        elif repo.source and repo.source.type == "svn" and endpoint:
+            # Export SVN tree into temporary scan directory for scanning
+            import tempfile
+            temp_scan_dir = tempfile.mkdtemp(prefix=f"curator_scan_{repo.id}_")
+            svn_url = endpoint if endpoint.startswith(("file://", "http://", "https://", "svn://")) else f"file://{endpoint}"
+            try:
+                cmd = ["svn", "export", "--depth", "infinity", "--non-interactive", "--trust-server-cert", svn_url, temp_scan_dir]
+                subprocess.run(cmd, capture_output=True, timeout=20)
+                scan_root = temp_scan_dir
+            except Exception:
+                scan_root = None
+
+        # Walk files and scan content for secrets
+        if scan_root and os.path.exists(scan_root):
+            for root, dirs, files in os.walk(scan_root):
+                # Skip .git and .svn internal admin folders
+                if ".git" in root or ".svn" in root:
+                    continue
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, scan_root)
                     
-                    if not content.strip():
-                        continue
-                    
-                    # For SVN, revision is the commit number (we only have r1)
-                    revision = "r1" if repo.source and repo.source.type == "svn" else "HEAD"
-                    
-                    file_findings = self._scan_content(content, rel_path, revision)
-                    for ff in file_findings:
-                        finding = Finding(
-                            repo_id=repo.id,
-                            type=ff["type"],
-                            severity=ff["severity"],
-                            location=f"{ff['file']}@{ff['revision']}",
-                            fingerprint=ff["fingerprint"],
-                            recommendation=ff["recommendation"]
-                        )
-                        self.db.add(finding)
-                        findings.append(finding)
+                    try:
+                        # Check file size for large binary finding (>100MB)
+                        fsize = os.path.getsize(file_path)
+                        if fsize > 100 * 1024 * 1024:
+                            finding = Finding(
+                                repo_id=repo.id,
+                                type="large_binary",
+                                severity="high",
+                                location=f"{rel_path}@HEAD",
+                                fingerprint=hashlib.sha256(rel_path.encode()).hexdigest()[:16],
+                                recommendation="File exceeds 100MB. Use Git LFS for migration."
+                            )
+                            self.db.add(finding)
+                            findings.append(finding)
                         
-                        # Emit event
-                        if self.event_emitter:
-                            self.event_emitter(0, {  # run_id not available here
+                        # Scan text files for secrets
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read(500000)  # Read up to 500KB
+                        
+                        if not content.strip():
+                            continue
+                        
+                        file_findings = self._scan_content(content, rel_path, "HEAD")
+                        for ff in file_findings:
+                            finding = Finding(
+                                repo_id=repo.id,
+                                type=ff["type"],
+                                severity=ff["severity"],
+                                location=f"{ff['file']}@{ff['revision']}",
+                                fingerprint=ff["fingerprint"],
+                                recommendation=ff["recommendation"]
+                            )
+                            self.db.add(finding)
+                            findings.append(finding)
+                            
+                            self._emit(0, {
                                 "agent": "Curator",
                                 "action": f"Secret found: {ff['secret_type']}",
                                 "reason": f"{ff['file']}@{ff['revision']} - {ff['redacted_preview']}",
                                 "tier": "T0"
                             })
-                
-                except Exception as e:
-                    # Skip binary/unreadable files
-                    pass
-        
-        # Also add finding for large files
-        if repo_descriptor.large_file_flag:
-            finding = Finding(
-                repo_id=repo.id,
-                type="large_binary",
-                severity="high",
-                location=f"trunk/large_file.bin@r1",
-                fingerprint="large_file_110mb",
-                recommendation="File exceeds 100MB. Use Git LFS for migration."
-            )
-            self.db.add(finding)
-            findings.append(finding)
-        
-        # Add unmapped author finding (placeholder for dev_ninja99)
-        if repo.source and repo.source.type == "svn":
-            finding = Finding(
-                repo_id=repo.id,
-                type="unmapped_author",
-                severity="medium",
-                location="dev_ninja99@r1",
-                fingerprint="author_dev_ninja99",
-                recommendation="Map dev_ninja99 to GitHub identity using header email evidence."
-            )
-            self.db.add(finding)
-            findings.append(finding)
-        
-        # Add dead branch finding
-        if repo_descriptor.source_type == "svn":
-            finding = Finding(
-                repo_id=repo.id,
-                type="dead_branch",
-                severity="low",
-                location="branches/dead-feature",
-                fingerprint="dead_branch_feature",
-                recommendation="Dead branch detected. Consider skipping or archiving."
-            )
-            self.db.add(finding)
-            findings.append(finding)
-        
+                    except Exception:
+                        pass
+            
+            # Clean up temporary scan directory if used
+            if temp_scan_dir and os.path.exists(temp_scan_dir):
+                import shutil
+                shutil.rmtree(temp_scan_dir, ignore_errors=True)
+
+        # 2. Dynamic Dead Branch Detection
+        if repo.source and repo.source.type == "svn" and endpoint:
+            try:
+                svn_url = endpoint if endpoint.startswith(("file://", "http://", "https://", "svn://")) else f"file://{endpoint}"
+                cmd = ["svn", "list", f"{svn_url}/branches", "--non-interactive", "--trust-server-cert"]
+                if repo.source and repo.source.credentials_ref:
+                    parts = repo.source.credentials_ref.split(":", 1)
+                    if len(parts) >= 1 and parts[0]:
+                        cmd.extend(["--username", parts[0]])
+                    if len(parts) >= 2 and parts[1]:
+                        cmd.extend(["--password", parts[1]])
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                if res.returncode == 0:
+                    for bname in [line.strip().rstrip("/") for line in res.stdout.splitlines() if line.strip()]:
+                        finding = Finding(
+                            repo_id=repo.id,
+                            type="dead_branch",
+                            severity="low",
+                            location=f"branches/{bname}",
+                            fingerprint=hashlib.sha256(bname.encode()).hexdigest()[:16],
+                            recommendation=f"Branch '{bname}' detected. Review for archive or migration."
+                        )
+                        self.db.add(finding)
+                        findings.append(finding)
+            except Exception:
+                pass
+
+        # 3. Dynamic Unmapped Author Detection
+        if repo.source and repo.source.type == "svn" and endpoint:
+            try:
+                svn_url = endpoint if endpoint.startswith(("file://", "http://", "https://", "svn://")) else f"file://{endpoint}"
+                cmd = ["svn", "log", "--quiet", "--non-interactive", "--trust-server-cert"]
+                if repo.source and repo.source.credentials_ref:
+                    parts = repo.source.credentials_ref.split(":", 1)
+                    if len(parts) >= 1 and parts[0]:
+                        cmd.extend(["--username", parts[0]])
+                    if len(parts) >= 2 and parts[1]:
+                        cmd.extend(["--password", parts[1]])
+                cmd.append(svn_url)
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                if res.returncode == 0:
+                    authors = set()
+                    for line in res.stdout.splitlines():
+                        if "|" in line:
+                            parts = [p.strip() for p in line.split("|")]
+                            if len(parts) >= 2 and parts[1]:
+                                authors.add(parts[1])
+                    for author in authors:
+                        finding = Finding(
+                            repo_id=repo.id,
+                            type="unmapped_author",
+                            severity="medium",
+                            location=f"{author}@HEAD",
+                            fingerprint=hashlib.sha256(f"author_{author}".encode()).hexdigest()[:16],
+                            recommendation=f"Map legacy committer '{author}' to modern GitHub identity using AI Cartographer."
+                        )
+                        self.db.add(finding)
+                        findings.append(finding)
+            except Exception:
+                pass
+
         self.db.commit()
         return findings
 
-    def run_curation(self, run_id: int, repo_ids: List[int]) -> Dict[str, Any]:
+    async def run_curation(self, run_id: int, repo_ids: List[int]) -> Dict[str, Any]:
         """Run curation for all repos in a run"""
         from app.models import Repo
         from app.connectors.base import RepoDescriptor
@@ -298,18 +361,17 @@ class CuratorAgent:
             
             # Emit events for each finding
             for finding in findings:
-                if self.event_emitter:
-                    # Redact secret value for event
-                    reason = f"{finding.location} - {finding.recommendation}"
-                    if finding.type == "secret":
-                        reason = f"{finding.location} - Secret detected (redacted)"
-                    
-                    self.event_emitter(run_id, {
-                        "agent": "Curator",
-                        "action": f"Finding: {finding.type}",
-                        "reason": reason,
-                        "tier": "T0"
-                    })
+                # Redact secret value for event
+                reason = f"{finding.location} - {finding.recommendation}"
+                if finding.type == "secret":
+                    reason = f"{finding.location} - Secret detected (redacted)"
+                
+                self._emit(run_id, {
+                    "agent": "Curator",
+                    "action": f"Finding: {finding.type}",
+                    "reason": reason,
+                    "tier": "T0"
+                })
         
         return {
             "findings_count": {k: len(v) for k, v in all_findings.items()},
