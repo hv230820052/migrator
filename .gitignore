@@ -141,3 +141,4 @@ logs/
 .env
 .env.prod
 .env.staging
+/samples/svn/messy-svn/repo-git-mirror/large_file.bin
