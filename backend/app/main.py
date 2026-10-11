@@ -150,6 +150,9 @@ class RepoResponse(BaseModel):
     contributor_count: int
     last_activity: str
     large_file_flag: bool
+    risk_tier: Optional[str] = "LOW"
+    risk_factors: Optional[List[str]] = []
+    effort_estimate: Optional[str] = "1-2 days"
 
 class RunCreate(BaseModel):
     source_ids: List[int]
@@ -213,6 +216,14 @@ async def get_catalog(db: Session = Depends(get_db)):
     """GET /api/catalog - Catalog with risk"""
     logger.info("D-08: R1 - FR-01/FR-02: Catalog request")
     repos = db.query(Repo).all()
+    
+    def _effort_calc(tier):
+        if tier == "HIGH":
+            return "1-2 weeks"
+        if tier == "MEDIUM":
+            return "3-5 days"
+        return "1-2 days"
+
     return [
         RepoResponse(
             id=r.id,
@@ -224,7 +235,10 @@ async def get_catalog(db: Session = Depends(get_db)):
             tag_count=r.tags,
             contributor_count=int(r.contributors) if r.contributors else 0,
             last_activity=r.last_activity or "",
-            large_file_flag=bool(r.large_files)
+            large_file_flag=bool(r.large_files),
+            risk_tier=r.risk_tier or "LOW",
+            risk_factors=r.risk_factors or [],
+            effort_estimate=_effort_calc(r.risk_tier)
         ) for r in repos
     ]
 
@@ -375,6 +389,27 @@ async def run_discovery(run_id: int, background_tasks: BackgroundTasks, db: Sess
     
     return {"run_id": run_id, "status": "discovery_started"}
 
+# In-memory insights cache
+_cached_insights: Dict[int, Any] = {}
+
+@app.get("/api/runs/{run_id}/insights")
+async def get_run_insights(run_id: int, db: Session = Depends(get_db)):
+    """GET /api/runs/{run_id}/insights - Retrieve AI Pre-Flight Insights"""
+    if run_id in _cached_insights:
+        return _cached_insights[run_id]
+    assessor = AssessorAgent(db, emit_event)
+    insights = await assessor.generate_ai_preflight_insights(run_id)
+    _cached_insights[run_id] = insights
+    return insights
+
+@app.post("/api/runs/{run_id}/insights")
+async def generate_run_insights(run_id: int, db: Session = Depends(get_db)):
+    """POST /api/runs/{run_id}/insights - Trigger fresh AI Pre-Flight Assessment"""
+    assessor = AssessorAgent(db, emit_event)
+    insights = await assessor.generate_ai_preflight_insights(run_id)
+    _cached_insights[run_id] = insights
+    return insights
+
 # Phase 2: Assessment & Curation endpoints
 @app.post("/api/runs/{run_id}/assess")
 async def run_assessment(run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -412,6 +447,8 @@ async def _run_assessment_background(run_id: int, repo_ids: List[int]):
     try:
         assessor = AssessorAgent(db, emit_event)
         result = await assessor.run_assessment(run_id, repo_ids)
+        insights = await assessor.generate_ai_preflight_insights(run_id)
+        _cached_insights[run_id] = insights
         logger.info(f"Assessment complete for run {run_id}: {result}")
     except Exception as e:
         logger.error(f"Assessment failed for run {run_id}: {e}")

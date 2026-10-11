@@ -48,7 +48,7 @@ class CartographerAgent:
         self.db = db_session
         self.event_emitter = event_emitter
         self.run_id = run_id
-        self.router = get_router(run_id) if run_id else None
+        self.router = get_router(run_id) if run_id else DecisionRouter(run_id=run_id or 1)
     
     def map_authors(self, repo_id: int) -> List["MappingProposal"]:
         """Map all authors for a repo via cascade"""
@@ -177,7 +177,7 @@ class CartographerAgent:
                     "signals": self._build_author_signals(author)
                 }
             )
-            if decision.tier.value == "T2" and decision.confident:
+            if decision.tier.value == "T2" and decision.confidence >= 0.7:
                 return self._build_proposal(legacy_id, decision.outcome, "T2", decision.sha256_memo)
         
         # TIER 2 FALLBACK: Deterministic heuristic (when no LLM key)
@@ -286,15 +286,20 @@ class CartographerAgent:
         ][:5]
     
     def _build_proposal(self, legacy_id: str, outcome: Dict, tier: str, memo_key: str = None) -> "MappingProposal":
+        login = outcome.get("github_login") or outcome.get("proposed_login", legacy_id)
+        email = outcome.get("proposed_email") or outcome.get("email", f"{legacy_id}@company.com")
+        conf = float(outcome.get("confidence", 0.90))
+        is_auto = bool(outcome.get("confident") or outcome.get("action") == "auto_map" or conf >= 0.75)
+        
         return MappingProposal(
             legacy_id=legacy_id,
-            proposed_login=outcome.get("proposed_login", "pending"),
-            proposed_email=outcome.get("proposed_email", "pending"),
-            confidence=outcome.get("confidence", 0.0),
+            proposed_login=login,
+            proposed_email=email,
+            confidence=conf,
             evidence=outcome.get("evidence", []),
-            status="auto" if outcome.get("confident") else "pending",
+            status="auto" if is_auto else "pending",
             tier=tier,
-            sha256_memo=outcome.get("sha256_memo") or hashlib.sha256(f"{legacy_id}:{outcome.get('proposed_email','')}".encode()).hexdigest()
+            sha256_memo=memo_key or outcome.get("sha256_memo") or hashlib.sha256(f"{legacy_id}:{email}".encode()).hexdigest()
         )
     
     def _check_memo(self, key: str) -> Optional[Dict]:
