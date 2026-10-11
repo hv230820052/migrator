@@ -1,0 +1,10 @@
+{
+  "ambiguous_author": "dev_ninja99",
+  "header_email": "dev.ninja99@example.com",
+  "source_type": "svn",
+  "revision_count": 52,
+  "oversized_file": "trunk/large_file.bin",
+  "secret_file": "trunk/secrets.txt",
+  "dead_branch": "branches/dead-feature",
+  "tag": "tags/v1.0"
+}

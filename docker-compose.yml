@@ -1,0 +1,27 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8100:8000"
+    env_file:
+      - .env
+    environment:
+      - DEMO_MODE=true
+      - SAMPLES_DIR=/app/samples
+    volumes:
+      - ./samples:/app/samples:ro
+      - provenance-db:/data/db
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+    depends_on:
+      - backend
+
+volumes:
+  provenance-db:

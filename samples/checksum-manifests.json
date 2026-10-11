@@ -1,0 +1,17 @@
+{
+  "generator_seed": 42,
+  "pre_hashes": {
+    "svn/messy-svn": "f6fa282aaf9831d750dcfc15c5da0188dbf2fba1b8f4424e3f29a7c744381f06",
+    "localgit/dirty-local": "35525f70b4ccc36dfe53ed552e60b11e4e0db071bda9b6e2284b9a1eadd961a3",
+    "tfs": "5c0d36b0efb2728e64553c681004f63407da825874a48549a72f88d90f19c134",
+    "github-org": "9ebf90006e8734b26c64428c4fbf889b99d6708d2a90264b28c8b2d98761b9b3"
+  },
+  "note": "Run generator twice; compare post hashes for G-12 byte-check",
+  "oversized_file_path": "samples/svn/messy-svn/repo/trunk/large_file.bin",
+  "secret_file_path": "samples/svn/messy-svn/repo/trunk/secrets.txt",
+  "secret_revision": "r4821",
+  "oversized_blob_size_mb": 110,
+  "ambiguous_author": "dev_ninja99",
+  "dead_branch": "branches/dead-feature",
+  "tag": "tags/v1.0"
+}

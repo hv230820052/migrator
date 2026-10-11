@@ -1,0 +1,110 @@
+[
+  {
+    "name": "connect_source",
+    "description": "Connect a source (SVN, TFS, localgit, github) and validate access — matches /api/sources (FR-01)",
+    "method": "POST",
+    "path": "/api/sources",
+    "tags": ["sources", "F-01", "US-01"],
+    "requestBody": {"type": "source", "endpoint": "string"},
+    "response": "ConnectionReport{status, readable_scope, issues[], fixes[]}"
+  },
+  {
+    "name": "catalog",
+    "description": "Catalog with risk — matches /api/catalog (FR-01/FR-02)",
+    "method": "GET",
+    "path": "/api/catalog",
+    "tags": ["catalog", "F-01", "US-01", "F-02", "US-02"],
+    "requestBody": null,
+    "response": "list of repos with all 8 metadata fields"
+  },
+  {
+    "name": "repo_risk",
+    "description": "Per-repo risk assessment with top-3 factors (FR-02)",
+    "method": "GET",
+    "path": "/api/repos/{id}/risk",
+    "tags": ["risk", "F-02", "US-02", "G-2"],
+    "requestBody": null,
+    "response": "risk{level, score, factors[], effort}"
+  },
+  {
+    "name": "repo_mappings",
+    "description": "Author mapping proposals with confidence (FR-03)",
+    "method": "GET",
+    "path": "/api/repos/{id}/mappings",
+    "tags": ["mappings", "F-03", "US-03", "G-3"],
+    "requestBody": null,
+    "response": "list of mapping proposals"
+  },
+  {
+    "name": "mapping_decision",
+    "description": "Approve/edit a mapping proposal — T3 resolution (FR-03 + FR-09)",
+    "method": "POST",
+    "path": "/api/mappings/{id}/decide",
+    "tags": ["mappings", "F-03", "F-09", "US-03", "CP-9"],
+    "requestBody": {"decision": "approve | edit | skip"},
+    "response": "Decision{outcome, tier, confidence}"
+  },
+  {
+    "name": "repo_findings",
+    "description": "Secrets / large binaries / dead branches findings (FR-05)",
+    "method": "GET",
+    "path": "/api/repos/{id}/findings",
+    "tags": ["findings", "F-05", "US-05", "G-6"],
+    "requestBody": null,
+    "response": "list of findings"
+  },
+  {
+    "name": "create_run",
+    "description": "Create migration run from approved plan (FR-07 + FR-09)",
+    "method": "POST",
+    "path": "/api/runs",
+    "tags": ["runs", "F-07", "F-09", "US-04", "G-4"],
+    "requestBody": {"source_ids": ["int"], "target_org": "string"},
+    "response": "run{id, status, token_budget}"
+  },
+  {
+    "name": "approve_gate",
+    "description": "One-click gate approval (PLAN, MAPPINGS, SECRETS, CUTOVER) (FR-09)",
+    "method": "POST",
+    "path": "/api/runs/{id}/approve/{gate}",
+    "tags": ["gates", "F-09", "G-11", "CP-9"],
+    "requestBody": {"gate": "string", "actor": "string", "decision": "approve | adjust | hold"},
+    "response": "Approval{gate, decision, tier}"
+  },
+  {
+    "name": "run_events_ws",
+    "description": "Live agent feed via WebSocket — streams <1s (FR-07 / G-13)",
+    "method": "WS",
+    "path": "/api/runs/{id}/events",
+    "tags": ["events", "F-07", "G-13"],
+    "requestBody": null,
+    "response": "Event{ts, agent, action, reason, tier} streamed"
+  },
+  {
+    "name": "run_fidelity",
+    "description": "Verification report — commit/branch/tag parity, per-tag sha256, coverage (FR-08 / G-9)",
+    "method": "GET",
+    "path": "/api/runs/{id}/fidelity",
+    "tags": ["fidelity", "F-08", "G-9", "G-10"],
+    "requestBody": null,
+    "response": "FidelityReport{commit_parity, branch_parity, tag_checksums, author_coverage, score}"
+  },
+  {
+    "name": "run_certificate",
+    "description": "Downloadable hash-stamped Migration Certificate (FR-08 / G-9)",
+    "method": "GET",
+    "path": "/api/runs/{id}/certificate",
+    "tags": ["certificate", "F-08", "G-9"],
+    "requestBody": null,
+    "response": "Certificate{repo, run_hash, date, metrics, verdict, signature_hash}"
+  },
+  {
+    "name": "run_beforeafter",
+    "description": "Split-view comparison data — source vs target (FR-08 / G-9)",
+    "method": "GET",
+    "path": "/api/runs/{id}/beforeafter",
+    "tags": ["beforeafter", "F-08", "G-9"],
+    "requestBody": null,
+    "response": "BeforeAfter{before:{}, after:{} matched rows}"
+  }
+]

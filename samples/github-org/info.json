@@ -1,0 +1,12 @@
+{
+  "org": "demo-org",
+  "repos": [
+    {
+      "name": "billing-svc",
+      "description": "Billing service"
+    }
+  ],
+  "issues_count": 3,
+  "pr_count": 1,
+  "note": "GitHub source org for FR-08 context migration"
+}

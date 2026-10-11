@@ -1,0 +1,11 @@
+{
+  "source": "tfs",
+  "label": "simulated",
+  "catalog": [
+    {
+      "repo": "billing-svc",
+      "branch": "dev"
+    }
+  ],
+  "note": "TFS represented as canned sample per D-02"
+}

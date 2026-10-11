@@ -1,0 +1,8 @@
+{
+  "description": "Org directory fixture for T0 exact matches in Cartographer",
+  "authors": {
+    "dev.ninja99@example.com": "hv230820052",
+    "john.doe@company.com": "HarshitVerma0005",
+    "alice.smith@company.com": "asmith"
+  }
+}

@@ -1,0 +1,580 @@
+"""
+Provenance Backend - Phase 1 Scout & Catalog
+FastAPI application with WebSocket feed, OpenAPI contract per arch.md §8
+"""
+import os
+import logging
+import asyncio
+from fastapi import FastAPI, WebSocket, HTTPException, Depends, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from datetime import datetime
+from typing import List, Optional, Dict, Any
+from pathlib import Path
+import json
+import uuid
+
+# Local imports
+from .models import Base, Source, Repo, Run, Event, Approval, SessionLocal, engine, init_db, Finding
+from sqlalchemy.orm import Session
+from .connectors import (
+    SvnConnector, LocalSvnConnector,
+    LocalGitConnector, GitHubConnector, TfsSampleConnector,
+    RepoDescriptor, ConnectionReport
+)
+from .agents.scout import DiscoveryService
+from .agents.assessor import AssessorAgent
+from .agents.curator import CuratorAgent
+from .agents.cartographer import CartographerAgent
+from .agents.gates import GatesAgent, GateType, GateStatus
+from .agents.executor import ExecutorAgent, MigrationResult
+from .cascade.router import DecisionRouter, get_router
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Initialize database
+init_db()
+
+# Dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Create FastAPI app with OpenAPI spec matching arch.md §8 exactly
+app = FastAPI(
+    title="Provenance API",
+    description="Agentic VCS migration platform API - 12 REST endpoints + WebSocket per arch.md §8",
+    version="0.1.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc"
+)
+
+# CORS for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+    
+    async def connect(self, websocket: WebSocket, run_id: str):
+        await websocket.accept()
+        self.active_connections[run_id] = websocket
+        logger.info(f"WebSocket connected for run {run_id}")
+    
+    def disconnect(self, run_id: str):
+        if run_id in self.active_connections:
+            del self.active_connections[run_id]
+    
+    async def send_event(self, run_id: str, event: dict):
+        if run_id in self.active_connections:
+            try:
+                await self.active_connections[run_id].send_text(json.dumps(event))
+            except Exception as e:
+                logger.warning(f"Failed to send WebSocket event: {e}")
+
+manager = ConnectionManager()
+
+# Event emitter for agents
+async def emit_event(run_id: int, event_data: dict):
+    """Emit event to WebSocket and store in DB"""
+    event = {
+        "id": str(uuid.uuid4())[:8],
+        "run_id": run_id,
+        "ts": datetime.utcnow().isoformat(),
+        **event_data
+    }
+    
+    # Store in DB (background)
+    db = SessionLocal()
+    try:
+        db_event = Event(
+            run_id=run_id,
+            agent=event_data.get("agent"),
+            action=event_data.get("action"),
+            reason=event_data.get("reason"),
+            tier=event_data.get("tier", "T0")
+        )
+        db.add(db_event)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to store event: {e}")
+    finally:
+        db.close()
+    
+    # Broadcast to WebSocket
+    await manager.send_event(str(run_id), event)
+
+# Pydantic models for OpenAPI
+class SourceCreate(BaseModel):
+    type: str  # svn, tfs, localgit, github
+    endpoint: str
+    credentials_ref: Optional[str] = None
+
+class ConnectionReportResponse(BaseModel):
+    status: str
+    readable_scope: str
+    issues: List[str] = []
+    fixes: List[str] = []
+
+class RepoResponse(BaseModel):
+    id: int
+    name: str
+    source_type: str
+    size: int
+    commit_count: int
+    branch_count: int
+    tag_count: int
+    contributor_count: int
+    last_activity: str
+    large_file_flag: bool
+
+class RunCreate(BaseModel):
+    source_ids: List[int]
+    target_org: str
+
+class GateApproval(BaseModel):
+    gate: str  # PLAN, MAPPINGS, SECRETS, CUTOVER
+    actor: str
+    decision: str  # approve, adjust, hold
+    reason: str = ""
+
+# API Routes matching arch.md §8 exactly (12 REST + WS)
+
+@app.post("/api/sources", response_model=ConnectionReportResponse)
+async def create_source(source: SourceCreate, db: Session = Depends(get_db)):
+    """POST /api/sources - Connect source (validate access)"""
+    logger.info(f"D-08: R1 - FR-01: Source create {source.type} at {source.endpoint}")
+    
+    if source.type not in ["svn", "tfs", "localgit", "github"]:
+        raise HTTPException(status_code=400, detail=f"Unknown source type: {source.type}")
+    
+    # Create connector and validate
+    connector = _create_connector(source.type, source.endpoint, source.credentials_ref)
+    if not connector:
+        raise HTTPException(status_code=400, detail=f"Failed to create connector for {source.type}")
+    
+    report = connector.validate()
+    
+    # Store source
+    db_source = Source(
+        type=source.type,
+        endpoint=source.endpoint,
+        credentials_ref=source.credentials_ref,
+        status=report.status,
+        readable_scope=report.readable_scope
+    )
+    db.add(db_source)
+    db.commit()
+    db.refresh(db_source)
+    
+    return ConnectionReportResponse(**report.__dict__)
+
+@app.get("/api/catalog", response_model=List[RepoResponse])
+async def get_catalog(db: Session = Depends(get_db)):
+    """GET /api/catalog - Catalog with risk"""
+    logger.info("D-08: R1 - FR-01/FR-02: Catalog request")
+    repos = db.query(Repo).all()
+    return [
+        RepoResponse(
+            id=r.id,
+            name=r.name,
+            source_type=r.source.type if r.source else "unknown",
+            size=r.size,
+            commit_count=r.commits,
+            branch_count=r.branches,
+            tag_count=r.tags,
+            contributor_count=int(r.contributors) if r.contributors else 0,
+            last_activity=r.last_activity or "",
+            large_file_flag=bool(r.large_files)
+        ) for r in repos
+    ]
+
+@app.get("/api/repos/{repo_id}/risk")
+async def get_repo_risk(repo_id: int, db: Session = Depends(get_db)):
+    """GET /api/repos/{id}/risk - Detail + factors (Phase 2)"""
+    logger.info(f"D-08: R1 - FR-02: Risk request for repo {repo_id}")
+    repo = db.query(Repo).filter(Repo.id == repo_id).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repo not found")
+    
+    # Run assessor for this repo
+    assessor = AssessorAgent(db)
+    assessment = assessor.assess_repo(repo)
+    
+    # Update repo with assessment
+    repo.risk_tier = assessment.level
+    repo.risk_factors = assessment.factors
+    db.commit()
+    
+    return {
+        "repo_id": repo_id,
+        "risk": assessment.level,
+        "score": assessment.score,
+        "factors": assessment.factors,
+        "effort_estimate": assessment.effort_estimate
+    }
+
+@app.post("/api/mappings/{mapping_id}/decide")
+async def decide_mapping(mapping_id: int, approval: GateApproval, db: Session = Depends(get_db)):
+    """POST /api/mappings/{id}/decide - Approve/edit (T3 resolution) (Phase 3)"""
+    logger.info(f"D-08: R4 - FR-03+FR-09: Mapping decision {mapping_id}: {approval.decision}")
+    return {"outcome": approval.decision, "tier": "T3"}
+
+@app.get("/api/repos/{repo_id}/findings")
+async def get_findings(repo_id: int, db: Session = Depends(get_db)):
+    """GET /api/repos/{id}/findings - Secrets/binaries/dead branches (Phase 2)"""
+    logger.info(f"D-08: R1 - FR-05: Findings request for repo {repo_id}")
+    findings = db.query(Finding).filter(Finding.repo_id == repo_id).all()
+    return [
+        {
+            "id": f.id,
+            "type": f.type,
+            "severity": f.severity,
+            "location": f.location,
+            "fingerprint": f.fingerprint,
+            "recommendation": f.recommendation,
+            "status": f.status
+        } for f in findings
+    ]
+
+@app.post("/api/runs", response_model=dict)
+async def create_run(run: RunCreate, db: Session = Depends(get_db)):
+    """POST /api/runs - Create migration run (from plan)"""
+    logger.info(f"D-08: R1 - FR-07/FR-09: Run creation for sources {run.source_ids}")
+    
+    db_run = Run(
+        source_ids=run.source_ids,
+        target_org=run.target_org,
+        status="created",
+        token_budget=100000,
+        tokens_used=0
+    )
+    db.add(db_run)
+    db.commit()
+    db.refresh(db_run)
+    
+    return {"run_id": db_run.id, "status": "created"}
+
+@app.post("/api/runs/{run_id}/approve/{gate}")
+async def approve_gate(run_id: int, gate: str, approval: GateApproval, db: Session = Depends(get_db)):
+    """POST /api/runs/{id}/approve/{gate} - Gate approval"""
+    logger.info(f"D-08: R4 - FR-09: Gate {gate} approval for run {run_id}")
+    return {"gate": gate, "decision": approval.decision, "tier": "T3"}
+
+@app.websocket("/api/runs/{run_id}/events")
+async def events_stream(websocket: WebSocket, run_id: int):
+    """WS /api/runs/{id}/events - Live agent feed (<1s latency per G-13)"""
+    await manager.connect(websocket, str(run_id))
+    try:
+        while True:
+            await websocket.receive_text()
+    except Exception as e:
+        logger.info(f"WebSocket disconnected for run {run_id}: {e}")
+    finally:
+        manager.disconnect(str(run_id))
+
+@app.get("/api/runs/{run_id}/fidelity")
+async def get_fidelity(run_id: int, db: Session = Depends(get_db)):
+    """GET /api/runs/{id}/fidelity - Report data (Phase 6)"""
+    logger.info(f"D-08: R4 - FR-08: Fidelity request for run {run_id}")
+    return {"commit_parity": 0, "branch_parity": 0, "tag_checksums": [], "author_coverage": 0}
+
+@app.get("/api/runs/{run_id}/certificate")
+async def get_certificate(run_id: int, db: Session = Depends(get_db)):
+    """GET /api/runs/{id}/certificate - Download certificate (Phase 6)"""
+    logger.info(f"D-08: R4 - FR-08: Certificate request for run {run_id}")
+    return {"certificate": "not-yet-generated", "hash": "pending"}
+
+@app.get("/api/runs/{run_id}/beforeafter")
+async def get_beforeafter(run_id: int, db: Session = Depends(get_db)):
+    """GET /api/runs/{id}/beforeafter - Split-view comparison data (Phase 6)"""
+    logger.info(f"D-08: R1 - FR-08: Before/after request for run {run_id}")
+    return {"before": {}, "after": {}}
+
+# Phase 1: Discovery endpoints
+
+async def _run_discovery_background(run_id: int, source_ids: List[int]):
+    """Background task to run discovery"""
+    db = SessionLocal()
+    try:
+        discovery = DiscoveryService(db, emit_event)
+        summary = await discovery.discover_all(run_id, source_ids)
+        
+        # Update run status
+        run = db.query(Run).filter(Run.id == run_id).first()
+        if run:
+            run.status = "discovered"
+            db.commit()
+        
+        logger.info(f"Discovery complete for run {run_id}: {summary}")
+    except Exception as e:
+        logger.error(f"Discovery failed for run {run_id}: {e}")
+        run = db.query(Run).filter(Run.id == run_id).first()
+        if run:
+            run.status = "failed"
+            db.commit()
+    finally:
+        db.close()
+
+# Phase 1: Discovery endpoints
+@app.post("/api/runs/{run_id}/discover")
+async def run_discovery(run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Trigger discovery for a run - streams results via WebSocket"""
+    run = db.query(Run).filter(Run.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    # Update run status
+    run.status = "discovering"
+    db.commit()
+    
+    # Run discovery in background
+    background_tasks.add_task(_run_discovery_background, run_id, run.source_ids)
+    
+    return {"run_id": run_id, "status": "discovery_started"}
+
+# Phase 2: Assessment & Curation endpoints
+@app.post("/api/runs/{run_id}/assess")
+async def run_assessment(run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Trigger risk assessment for a run"""
+    run = db.query(Run).filter(Run.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    # Get repo IDs for this run
+    repos = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).all()
+    repo_ids = [r.id for r in repos]
+    
+    # Run assessment in background
+    background_tasks.add_task(_run_assessment_background, run_id, repo_ids)
+    
+    return {"run_id": run_id, "status": "assessment_started"}
+
+@app.post("/api/runs/{run_id}/curate")
+async def run_curation(run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Trigger curation (secret scanning) for a run"""
+    run = db.query(Run).filter(Run.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    repos = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).all()
+    repo_ids = [r.id for r in repos]
+    
+    background_tasks.add_task(_run_curation_background, run_id, repo_ids)
+    
+    return {"run_id": run_id, "status": "curation_started"}
+
+async def _run_assessment_background(run_id: int, repo_ids: List[int]):
+    """Background task to run assessment"""
+    db = SessionLocal()
+    try:
+        assessor = AssessorAgent(db, emit_event)
+        result = await assessor.run_assessment(run_id, repo_ids)
+        logger.info(f"Assessment complete for run {run_id}: {result}")
+    except Exception as e:
+        logger.error(f"Assessment failed for run {run_id}: {e}")
+    finally:
+        db.close()
+
+async def _run_curation_background(run_id: int, repo_ids: List[int]):
+    """Background task to run curation"""
+    db = SessionLocal()
+    try:
+        from app.models import Repo
+        from app.connectors.base import RepoDescriptor
+        repos = db.query(Repo).filter(Repo.id.in_(repo_ids)).all()
+        
+        # Create repo descriptors
+        repo_descriptors = {}
+        for repo in repos:
+            repo_descriptors[repo.id] = RepoDescriptor(
+                name=repo.name,
+                source_type=repo.source.type if repo.source else "unknown",
+                size=repo.size,
+                commit_count=repo.commits,
+                branch_count=repo.branches,
+                tag_count=repo.tags,
+                contributor_count=int(repo.contributors) if repo.contributors else 0,
+                last_activity=repo.last_activity or "",
+                large_file_flag=bool(repo.large_files)
+            )
+        
+        curator = CuratorAgent(db, emit_event)
+        result = await curator.run_curation(run_id, repo_ids)
+        logger.info(f"Curation complete for run {run_id}: {result}")
+    except Exception as e:
+        logger.error(f"Curation failed for run {run_id}: {e}")
+    finally:
+        db.close()
+
+
+# Phase 3: Cartographer & Gates endpoints
+@app.get("/api/repos/{repo_id}/mappings")
+async def get_mappings(repo_id: int, db: Session = Depends(get_db)):
+    """GET /api/repos/{id}/mappings - Author mapping proposals (Phase 3)"""
+    logger.info(f"D-08: R1 - FR-03: Mappings request for repo {repo_id}")
+    cartographer = CartographerAgent(db)
+    proposals = cartographer.map_authors(repo_id)
+    return [
+        {
+            "legacy_id": p.legacy_id,
+            "proposed_login": p.proposed_login,
+            "proposed_email": p.proposed_email,
+            "confidence": p.confidence,
+            "evidence": p.evidence,
+            "status": p.status,
+            "tier": p.tier,
+            "sha256_memo": p.sha256_memo
+        } for p in proposals
+    ]
+
+@app.post("/api/mappings/{mapping_id}/decide")
+async def decide_mapping(mapping_id: int, approval: GateApproval, db: Session = Depends(get_db)):
+    """POST /api/mappings/{id}/decide - Approve/edit (T3 resolution) (Phase 3)"""
+    logger.info(f"D-08: R4 - FR-03+FR-09: Mapping decision {mapping_id}: {approval.decision}")
+    return {"outcome": approval.decision, "tier": "T3"}
+
+# Phase 3: Gates endpoints
+@app.get("/api/runs/{run_id}/gates")
+async def get_gates(run_id: int, db: Session = Depends(get_db)):
+    """GET /api/runs/{id}/gates - All gate statuses"""
+    logger.info(f"D-08: R4 - FR-09: Gates status for run {run_id}")
+    gates = GatesAgent(db)
+    return gates.get_all_gates(run_id)
+
+@app.get("/api/runs/{run_id}/gates/{gate}")
+async def get_gate(run_id: int, gate: str, db: Session = Depends(get_db)):
+    """GET /api/runs/{id}/gates/{gate} - Specific gate status"""
+    logger.info(f"D-08: R4 - FR-09: Gate {gate} status for run {run_id}")
+    gates = GatesAgent(db)
+    try:
+        gate_type = GateType(gate.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid gate: {gate}")
+    return gates.get_gate_status(run_id, gate_type)
+
+@app.post("/api/runs/{run_id}/gates/{gate}")
+async def approve_gate(run_id: int, gate: str, approval: GateApproval, db: Session = Depends(get_db)):
+    """POST /api/runs/{id}/gates/{gate} - Gate approval (Phase 3)"""
+    logger.info(f"D-08: R4 - FR-09: Gate {gate} approval for run {run_id}")
+    gates = GatesAgent(db)
+    try:
+        gate_type = GateType(gate.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid gate: {gate}")
+    return gates.approve_gate(run_id, gate_type, approval.actor, approval.decision, approval.reason)
+
+@app.get("/api/runs/{run_id}/next-action")
+async def get_next_action(run_id: int, db: Session = Depends(get_db)):
+    """GET /api/runs/{id}/next-action - Next required action"""
+    logger.info(f"D-08: R4 - FR-09: Next action for run {run_id}")
+    gates = GatesAgent(db)
+    return gates.get_next_action(run_id)
+
+# Phase 3: Cascade router stats
+@app.get("/api/runs/{run_id}/cascade/stats")
+async def get_cascade_stats(run_id: int):
+    """GET /api/runs/{id}/cascade/stats - Cascade router stats"""
+    from .cascade.router import get_router
+    router = get_router(run_id)
+    return router.get_stats()
+
+# Phase 4: Executor endpoints
+@app.post("/api/runs/{run_id}/migrate")
+async def run_migration(run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """POST /api/runs/{id}/migrate - Execute migration with self-heal"""
+    run = db.query(Run).filter(Run.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    run.status = "migrating"
+    db.commit()
+    
+    background_tasks.add_task(_run_migration_background, run_id)
+    
+    return {"run_id": run_id, "status": "migration_started"}
+
+async def _run_migration_background(run_id: int):
+    """Background task to run migration"""
+    db = SessionLocal()
+    try:
+        executor = ExecutorAgent(db, emit_event, run_id)
+        
+        # Get repos for this run
+        run = db.query(Run).filter(Run.id == run_id).first()
+        if not run:
+            return
+        
+        repos = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).all()
+        repo_ids = [r.id for r in repos]
+        
+        for repo_id in repo_ids:
+            result = await executor.migrate_repo(repo_id)
+            logger.info(f"Migration result for repo {repo_id}: {result}")
+            
+            # Emit result event
+            await emit_event(run_id, {
+                "agent": "Executor",
+                "action": f"Migration {'succeeded' if result.success else 'failed'}",
+                "reason": f"Commits: {result.commits_pushed}, LFS files: {len(result.lfs_files)}",
+                "tier": "T0"
+            })
+        
+        run.status = "migrated"
+        db.commit()
+    except Exception as e:
+        logger.error(f"Migration failed for run {run_id}: {e}")
+        run = db.query(Run).filter(Run.id == run_id).first()
+        if run:
+            run.status = "failed"
+            db.commit()
+    finally:
+        db.close()
+
+@app.get("/api/runs/{run_id}/migration/status")
+async def get_migration_status(run_id: int, db: Session = Depends(get_db)):
+    """GET /api/runs/{id}/migration/status - Migration progress"""
+    run = db.query(Run).filter(Run.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"run_id": run_id, "status": run.status}
+
+# Health check
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+# Helper
+def _create_connector(source_type: str, endpoint: str, credentials_ref: Optional[str]):
+    """Create connector instance"""
+    if source_type == "svn":
+        return LocalSvnConnector(endpoint)
+    elif source_type == "localgit":
+        return LocalGitConnector(endpoint)
+    elif source_type == "github":
+        token = os.environ.get("GITHUB_PAT", "")
+        if not token:
+            return None
+        return GitHubConnector(endpoint, token)
+    elif source_type == "tfs":
+        return TfsSampleConnector(endpoint)
+    return None
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
