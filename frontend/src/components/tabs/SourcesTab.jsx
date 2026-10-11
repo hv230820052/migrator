@@ -83,7 +83,31 @@ export function SourcesTab({
             className="btn-chip"
           >
             <Server style={{ width: '12px', height: '12px' }} />
-            <span>TFS Sample Workspace</span>
+            <span>TFS Workspace (Simulated)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCustomVcsType('gitlab');
+              setCustomEndpoint('https://gitlab.com/gitlab-org/gitlab-foss.git');
+              setCustomCreds('');
+            }}
+            className="btn-chip"
+          >
+            <Globe style={{ width: '12px', height: '12px' }} />
+            <span>GitLab Remote</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCustomVcsType('bitbucket');
+              setCustomEndpoint('https://bitbucket.org/atlassian/maven-jgitflow.git');
+              setCustomCreds('');
+            }}
+            className="btn-chip"
+          >
+            <Globe style={{ width: '12px', height: '12px' }} />
+            <span>Bitbucket Remote</span>
           </button>
         </div>
 
@@ -96,10 +120,12 @@ export function SourcesTab({
               onChange={(e) => setCustomVcsType(e.target.value)}
               className="form-select"
             >
-              <option value="svn">Subversion (SVN - Remote or Local)</option>
+              <option value="svn">Subversion (SVN - Non-Git Centralized)</option>
+              <option value="tfs">Team Foundation Server (TFS / TFVC)</option>
               <option value="localgit">Local Git Mirror / Bare Repo</option>
               <option value="github">GitHub Organization</option>
-              <option value="tfs">Team Foundation Server (TFS / TFVC)</option>
+              <option value="gitlab">GitLab (Cloud / Self-Hosted)</option>
+              <option value="bitbucket">Bitbucket (Cloud / Data Center)</option>
             </select>
           </div>
 
@@ -167,7 +193,7 @@ export function SourcesTab({
             <Network style={{ width: '16px', height: '16px' }} />
             <span>Active Connected VCS Sources</span>
           </h3>
-          <span className="badge badge-t0">{sourcesList.length} Connected</span>
+          <span className="badge badge-connected">{sourcesList.length} Connected</span>
         </div>
         <p className="panel-description">
           Live repository connections registered with Provenance. Read-only verification ensures zero alteration to original source history.
@@ -186,7 +212,7 @@ export function SourcesTab({
                   <strong style={{ fontSize: '0.88rem', color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
                     {src.type} Source #{src.id}
                   </strong>
-                  <span className={`badge ${src.status === 'connected' ? 'badge-t0' : 'badge-t3'}`}>
+                  <span className={`badge ${(!src.status || src.status.toLowerCase() === 'connected') ? 'badge-connected' : 'badge-t3'}`}>
                     {src.status || 'Connected'}
                   </span>
                 </div>

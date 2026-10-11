@@ -109,7 +109,7 @@ export function CertificateTab({
                 <strong style={{ fontSize: '0.88rem', color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
                   Target: GitHub Organization
                 </strong>
-                <span className="badge badge-t0">Verified State</span>
+                <span className="badge badge-success">Verified State</span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.55rem', fontSize: '0.82rem' }}>
                 <div>

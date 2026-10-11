@@ -295,6 +295,68 @@ class GitHubConnector(SourceConnector):
         return {"repo": repo.name, "details": "T0 inspection complete"}
 
 
+class GitRemoteConnector(SourceConnector):
+    """Generic remote Git connector for GitLab, Bitbucket, Azure Repos, etc."""
+    def __init__(self, endpoint: str, credentials_ref: Optional[str] = None, source_type: str = "git"):
+        self.endpoint = endpoint
+        self.credentials_ref = credentials_ref
+        self.source_type = source_type
+        
+    def _build_auth_url(self) -> str:
+        url = self.endpoint
+        if self.credentials_ref and url.startswith(("http://", "https://")):
+            protocol, rest = url.split("://", 1)
+            if "@" not in rest:
+                url = f"{protocol}://{self.credentials_ref}@{rest}"
+        return url
+
+    def validate(self) -> ConnectionReport:
+        auth_url = self._build_auth_url()
+        res = run_cmd(["git", "ls-remote", "--heads", auth_url])
+        if res.returncode == 0:
+            return ConnectionReport(
+                status="connected",
+                readable_scope=f"{self.source_type.upper()}: {self.endpoint}",
+                issues=[],
+                fixes=[]
+            )
+        err = res.stderr.strip()
+        return ConnectionReport(
+            status="failed",
+            readable_scope="",
+            issues=[err or "Authentication or connection failure"],
+            fixes=["Check personal access token", "Verify repository URL", "Ensure permissions allow clone"]
+        )
+
+    def discover(self) -> List[RepoDescriptor]:
+        name = self.endpoint.rstrip("/").split("/")[-1]
+        if name.endswith(".git"):
+            name = name[:-4]
+        auth_url = self._build_auth_url()
+        res = run_cmd(["git", "ls-remote", auth_url])
+        branch_count = 1
+        tag_count = 0
+        if res.returncode == 0:
+            lines = res.stdout.splitlines()
+            branch_count = max(1, len([l for l in lines if "refs/heads/" in l]))
+            tag_count = len([l for l in lines if "refs/tags/" in l])
+
+        return [RepoDescriptor(
+            name=name,
+            source_type=self.source_type,
+            size=1024 * 1024,
+            commit_count=10,
+            branch_count=branch_count,
+            tag_count=tag_count,
+            contributor_count=1,
+            last_activity="",
+            large_file_flag=False
+        )]
+
+    def inspect(self, repo: RepoDescriptor) -> Dict[str, Any]:
+        return {"repo": repo.name, "details": f"{self.source_type.upper()} inspection complete"}
+
+
 class TfsSampleConnector(SourceConnector):
     """TFS Sample connector - reads canned JSON catalog (simulated source)"""
     

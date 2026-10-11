@@ -52,10 +52,10 @@ export function OverviewTab({
             VCS Sources Supported
           </div>
           <div style={{ fontSize: '2.25rem', fontWeight: 800, marginTop: '0.4rem', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
-            4
+            6
           </div>
           <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '0.35rem' }}>
-            Subversion, TFS, LocalGit, GitHub
+            SVN, TFS, LocalGit, GitHub, GitLab, Bitbucket
           </div>
         </div>
 

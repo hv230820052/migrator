@@ -12,6 +12,7 @@ from dataclasses import asdict
 from ..connectors import (
     SvnConnector, LocalSvnConnector, 
     LocalGitConnector, GitHubConnector, TfsSampleConnector,
+    GitRemoteConnector,
     RepoDescriptor, ConnectionReport
 )
 from ..cascade.router import DecisionRouter
@@ -117,6 +118,8 @@ class ScoutAgent:
             return GitHubConnector(source.endpoint, token)
         elif source.type == "tfs":
             return TfsSampleConnector(source.endpoint)
+        elif source.type in ["gitlab", "bitbucket", "git"]:
+            return GitRemoteConnector(source.endpoint, source.credentials_ref, source.type)
         return None
 
 

@@ -17,6 +17,8 @@ export default function App() {
     setActiveTab,
     runId,
     catalog,
+    selectedRepoId,
+    setSelectedRepoId,
     findings,
     mappings,
     gates,
@@ -38,6 +40,7 @@ export default function App() {
     customTargetOrg,
     setCustomTargetOrg,
     triggerAction,
+    updateAuthorMapping,
     handleConnectSource,
     handleRunFullGoldenPath,
     approveGate,
@@ -129,6 +132,10 @@ export default function App() {
         {activeTab === 'cartographer' && (
           <MappingsTab
             mappings={mappings}
+            catalog={catalog}
+            selectedRepoId={selectedRepoId}
+            onSelectRepo={setSelectedRepoId}
+            onUpdateMapping={updateAuthorMapping}
           />
         )}
 

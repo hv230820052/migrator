@@ -33,22 +33,29 @@ export function useProvenanceRun(initialRunId = 1) {
     queryFn: () => fetchJson(`${API_BASE}/api/sources`),
   });
 
+  const [selectedRepoId, setSelectedRepoId] = useState(null);
+
   // TanStack Query: 2. Discovered Repos Catalog
   const { data: catalog = [] } = useQuery({
     queryKey: ['catalog'],
     queryFn: () => fetchJson(`${API_BASE}/api/catalog`),
   });
 
+  // Default to the latest discovered repository in catalog if no repo explicitly selected
+  const activeRepoId = selectedRepoId || (catalog.length > 0 ? catalog[catalog.length - 1].id : 1);
+
   // TanStack Query: 3. Author Mappings
   const { data: mappings = [] } = useQuery({
-    queryKey: ['mappings'],
-    queryFn: () => fetchJson(`${API_BASE}/api/repos/1/mappings`),
+    queryKey: ['mappings', activeRepoId],
+    queryFn: () => fetchJson(`${API_BASE}/api/repos/${activeRepoId}/mappings`),
+    enabled: !!activeRepoId,
   });
 
   // TanStack Query: 4. Security Findings & Secrets
   const { data: findings = [] } = useQuery({
-    queryKey: ['findings'],
-    queryFn: () => fetchJson(`${API_BASE}/api/repos/1/findings`),
+    queryKey: ['findings', activeRepoId],
+    queryFn: () => fetchJson(`${API_BASE}/api/repos/${activeRepoId}/findings`),
+    enabled: !!activeRepoId,
   });
 
   // TanStack Query: 5. Governance Hard Approval Gates
@@ -153,6 +160,22 @@ export function useProvenanceRun(initialRunId = 1) {
     } finally {
       setLoadingAction('');
     }
+  };
+
+  // Author Mapping Update
+  const updateAuthorMapping = async (repoId, legacyId, proposedLogin, proposedEmail) => {
+    const res = await fetch(`${API_BASE}/api/repos/${repoId}/mappings/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        legacy_id: legacyId,
+        proposed_login: proposedLogin,
+        proposed_email: proposedEmail
+      })
+    });
+    if (!res.ok) throw new Error('Failed to update author mapping');
+    await queryClient.invalidateQueries({ queryKey: ['mappings'] });
+    return res.json();
   };
 
   // Connect custom VCS source
@@ -291,6 +314,8 @@ export function useProvenanceRun(initialRunId = 1) {
     runId,
     setRunId,
     catalog,
+    selectedRepoId: activeRepoId,
+    setSelectedRepoId,
     findings,
     mappings,
     gates,
@@ -314,6 +339,7 @@ export function useProvenanceRun(initialRunId = 1) {
     customTargetOrg,
     setCustomTargetOrg,
     triggerAction,
+    updateAuthorMapping,
     handleConnectSource,
     handleRunFullGoldenPath,
     approveGate,

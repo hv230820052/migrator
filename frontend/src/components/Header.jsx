@@ -30,8 +30,9 @@ export function Header({
             width: '8px',
             height: '8px',
             borderRadius: '50%',
-            backgroundColor: wsConnected ? 'var(--brand-primary)' : 'var(--text-tertiary)',
-            border: '1px solid var(--border-subtle)'
+            backgroundColor: wsConnected ? '#10b981' : 'var(--text-tertiary)',
+            boxShadow: wsConnected ? '0 0 6px rgba(16, 185, 129, 0.4)' : 'none',
+            border: wsConnected ? '1px solid #059669' : '1px solid var(--border-subtle)'
           }} />
           <span style={{
             fontSize: '1.05rem',
@@ -41,6 +42,12 @@ export function Header({
             fontFamily: 'var(--font-mono)'
           }}>
             PROVENANCE
+          </span>
+          <span
+            className={`badge ${wsConnected ? 'badge-connected' : 'badge-t3'}`}
+            style={{ fontSize: '0.65rem', padding: '0.12rem 0.48rem' }}
+          >
+            {wsConnected ? 'Connected' : 'Offline'}
           </span>
         </div>
 

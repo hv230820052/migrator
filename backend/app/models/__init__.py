@@ -89,6 +89,7 @@ class Mapping(Base):
     repo_id = Column(Integer, ForeignKey("repos.id"), nullable=False)
     legacy_id = Column(String(200), nullable=False)
     github_id = Column(String(200), nullable=False)
+    proposed_email = Column(String(200), nullable=True)
     method = Column(String(50), default="exact_match")
     confidence = Column(Float, default=0.0)
     status = Column(String(20), default="pending")

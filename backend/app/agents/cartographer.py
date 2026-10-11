@@ -51,13 +51,30 @@ class CartographerAgent:
         self.router = get_router(run_id) if run_id else DecisionRouter(run_id=run_id or 1)
     
     def map_authors(self, repo_id: int) -> List["MappingProposal"]:
-        """Map all authors for a repo via cascade"""
+        """Map all authors for a repo via cascade with DB override support"""
+        from app.models import Mapping
+        db_maps = {m.legacy_id: m for m in self.db.query(Mapping).filter(Mapping.repo_id == repo_id).all()}
+        
         legacy_authors = self._get_legacy_authors(repo_id)
         
         proposals = []
         for author in legacy_authors:
-            proposal = self._map_single_author(author, repo_id)
-            proposals.append(proposal)
+            legacy_id = author["legacy_id"]
+            if legacy_id in db_maps:
+                m = db_maps[legacy_id]
+                proposals.append(MappingProposal(
+                    legacy_id=legacy_id,
+                    proposed_login=m.github_id,
+                    proposed_email=m.proposed_email or f"{legacy_id}@users.noreply.github.com",
+                    confidence=m.confidence or 1.0,
+                    evidence=[{"key": "override", "value": "User configured in Identity Cartographer"}],
+                    status=m.status or "confirmed",
+                    tier="T0",
+                    sha256_memo=hashlib.sha256(f"{legacy_id}:{m.proposed_email}".encode()).hexdigest()
+                ))
+            else:
+                proposal = self._map_single_author(author, repo_id)
+                proposals.append(proposal)
         
         return proposals
     
@@ -100,8 +117,8 @@ class CartographerAgent:
                                     authors_map[author_id] = {
                                         "legacy_id": author_id,
                                         "commits": 0,
-                                        "email": f"{author_id.lower().replace('_', '.')}@company.com",
-                                        "header_emails": [f"{author_id.lower().replace('_', '.')}@company.com"],
+                                        "email": f"{author_id}@users.noreply.github.com",
+                                        "header_emails": [f"{author_id}@users.noreply.github.com"],
                                         "files_touched": []
                                     }
                                 authors_map[author_id]["commits"] += 1
@@ -123,7 +140,7 @@ class CartographerAgent:
                                     authors_map[an] = {
                                         "legacy_id": an,
                                         "commits": 0,
-                                        "email": ae,
+                                        "email": ae or f"{an}@users.noreply.github.com",
                                         "header_emails": [ae] if ae else [],
                                         "files_touched": []
                                     }
@@ -142,7 +159,7 @@ class CartographerAgent:
             {
                 "legacy_id": contributor_id,
                 "commits": repo.commits or 1,
-                "email": f"{contributor_id}@company.com",
+                "email": f"{contributor_id}@users.noreply.github.com",
                 "header_emails": [],
                 "files_touched": []
             }
@@ -213,7 +230,7 @@ class CartographerAgent:
             return {
                 "confident": True,
                 "proposed_login": username,
-                "proposed_email": f"{username}@company.com",
+                "proposed_email": f"{username}@users.noreply.github.com",
                 "confidence": 1.0,
                 "reason": f"Exact username match for {username}"
             }
@@ -287,7 +304,7 @@ class CartographerAgent:
     
     def _build_proposal(self, legacy_id: str, outcome: Dict, tier: str, memo_key: str = None) -> "MappingProposal":
         login = outcome.get("github_login") or outcome.get("proposed_login", legacy_id)
-        email = outcome.get("proposed_email") or outcome.get("email", f"{legacy_id}@company.com")
+        email = outcome.get("proposed_email") or outcome.get("email") or f"{legacy_id}@users.noreply.github.com"
         conf = float(outcome.get("confidence", 0.90))
         is_auto = bool(outcome.get("confident") or outcome.get("action") == "auto_map" or conf >= 0.75)
         

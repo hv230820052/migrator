@@ -4,7 +4,7 @@ All connectors are strictly READ-ONLY
 """
 from .base import SourceConnector, RepoDescriptor, ConnectionReport
 from .svn import SvnConnector, LocalSvnConnector
-from .localgit import LocalGitConnector, GitHubConnector, TfsSampleConnector
+from .localgit import LocalGitConnector, GitHubConnector, TfsSampleConnector, GitRemoteConnector
 
 __all__ = [
     "SourceConnector",
@@ -14,5 +14,6 @@ __all__ = [
     "LocalSvnConnector",
     "LocalGitConnector",
     "GitHubConnector",
-    "TfsSampleConnector"
+    "TfsSampleConnector",
+    "GitRemoteConnector"
 ]

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from .connectors import (
     SvnConnector, LocalSvnConnector,
     LocalGitConnector, GitHubConnector, TfsSampleConnector,
+    GitRemoteConnector,
     RepoDescriptor, ConnectionReport
 )
 from .agents.scout import DiscoveryService
@@ -171,7 +172,7 @@ async def create_source(source: SourceCreate, db: Session = Depends(get_db)):
     """POST /api/sources - Connect source (validate access)"""
     logger.info(f"D-08: R1 - FR-01: Source create {source.type} at {source.endpoint}")
     
-    if source.type not in ["svn", "tfs", "localgit", "github"]:
+    if source.type not in ["svn", "tfs", "localgit", "github", "gitlab", "bitbucket", "git"]:
         raise HTTPException(status_code=400, detail=f"Unknown source type: {source.type}")
     
     # Create connector and validate
@@ -507,6 +508,41 @@ async def get_mappings(repo_id: int, db: Session = Depends(get_db)):
         } for p in proposals
     ]
 
+class MappingUpdateRequest(BaseModel):
+    legacy_id: str
+    proposed_login: str
+    proposed_email: str
+
+@app.post("/api/repos/{repo_id}/mappings/update")
+async def update_mapping(repo_id: int, update: MappingUpdateRequest, db: Session = Depends(get_db)):
+    """Update or override author mapping for a repository"""
+    logger.info(f"D-08: R4 - FR-03: Updating author mapping for repo {repo_id}: {update.legacy_id} -> {update.proposed_login} <{update.proposed_email}>")
+    from app.models import Mapping
+    existing = db.query(Mapping).filter(Mapping.repo_id == repo_id, Mapping.legacy_id == update.legacy_id).first()
+    if existing:
+        existing.github_id = update.proposed_login
+        existing.proposed_email = update.proposed_email
+        existing.status = "edited"
+        existing.confidence = 1.0
+    else:
+        new_map = Mapping(
+            repo_id=repo_id,
+            legacy_id=update.legacy_id,
+            github_id=update.proposed_login,
+            proposed_email=update.proposed_email,
+            method="human_override",
+            confidence=1.0,
+            status="edited"
+        )
+        db.add(new_map)
+    db.commit()
+    return {
+        "status": "updated",
+        "legacy_id": update.legacy_id,
+        "proposed_login": update.proposed_login,
+        "proposed_email": update.proposed_email
+    }
+
 @app.post("/api/mappings/{mapping_id}/decide")
 async def decide_mapping(mapping_id: int, approval: GateApproval, db: Session = Depends(get_db)):
     """POST /api/mappings/{id}/decide - Approve/edit (T3 resolution) (Phase 3)"""
@@ -645,6 +681,8 @@ def _create_connector(source_type: str, endpoint: str, credentials_ref: Optional
         return GitHubConnector(endpoint, token)
     elif source_type == "tfs":
         return TfsSampleConnector(endpoint)
+    elif source_type in ["gitlab", "bitbucket", "git"]:
+        return GitRemoteConnector(endpoint, credentials_ref, source_type)
     return None
 
 if __name__ == "__main__":

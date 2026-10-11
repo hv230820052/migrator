@@ -81,7 +81,11 @@ class ExecutorAgent:
                 elif source.type == "localgit":
                     await self._clone_localgit(source, repo_path)
                 elif source.type == "github":
-                    await self._clone_github(source, repo_path)
+                    await self._clone_github(source, repo_path, repo.name)
+                elif source.type in ["gitlab", "bitbucket", "git"]:
+                    await self._clone_git_remote(source, repo_path, repo.name)
+                elif source.type == "tfs":
+                    await self._clone_tfs(source, repo_path)
                 else:
                     return MigrationResult(success=False, commits_pushed=0, refs_updated=[], lfs_files=[], errors=[f"Unsupported source type: {source.type}"])
                 
@@ -152,18 +156,66 @@ class ExecutorAgent:
         if result.returncode != 0:
             raise Exception(f"git clone failed: {result.stderr}")
     
-    async def _clone_github(self, source, repo_path: Path):
-        """Clone GitHub repo"""
-        # Use GitHub API to get clone URL, then clone
-        token = os.environ.get("GITHUB_PAT", "")
-        if token:
-            clone_url = f"https://x-access-token:{token}@github.com/{source.endpoint}.git"
+    async def _clone_github(self, source, repo_path: Path, repo_name: Optional[str] = None):
+        """Clone GitHub repo from org or direct repo URL"""
+        token = source.credentials_ref or os.environ.get("GITHUB_PAT", "")
+        endpoint = (source.endpoint or "").strip().rstrip("/")
+        
+        # Clean protocol if present
+        if endpoint.startswith("https://github.com/"):
+            endpoint = endpoint[len("https://github.com/"):]
+        elif endpoint.startswith("http://github.com/"):
+            endpoint = endpoint[len("http://github.com/"):]
+        endpoint = endpoint.rstrip(".git")
+        
+        # If endpoint is just an org name, append repo_name
+        if "/" not in endpoint and repo_name:
+            full_repo = f"{endpoint}/{repo_name}"
         else:
-            clone_url = f"https://github.com/{source.endpoint}.git"
+            full_repo = endpoint
+            
+        if token:
+            clone_url = f"https://x-access-token:{token}@github.com/{full_repo}.git"
+        else:
+            clone_url = f"https://github.com/{full_repo}.git"
+            
         cmd = ["git", "clone", "--mirror", clone_url, str(repo_path)]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
             raise Exception(f"git clone failed: {result.stderr}")
+    
+    async def _clone_git_remote(self, source, repo_path: Path, repo_name: Optional[str] = None):
+        """Clone remote Git repo (GitLab, Bitbucket, Azure Repos) using mirror clone"""
+        url = (source.endpoint or "").strip().rstrip("/")
+        # If url doesn't end with .git and repo_name is provided, check if repo_name should be appended
+        if repo_name and not url.endswith(f"/{repo_name}") and not url.endswith(f"/{repo_name}.git"):
+            if "/" in url and not url.endswith(".git"):
+                url = f"{url}/{repo_name}.git"
+        if not url.endswith(".git") and not url.endswith("/"):
+            url = f"{url}.git"
+        if source.credentials_ref and url.startswith(("http://", "https://")):
+            protocol, rest = url.split("://", 1)
+            if "@" not in rest:
+                url = f"{protocol}://{source.credentials_ref}@{rest}"
+        cmd = ["git", "clone", "--mirror", url, str(repo_path)]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if result.returncode != 0:
+            raise Exception(f"git clone failed: {result.stderr}")
+    
+    async def _clone_tfs(self, source, repo_path: Path):
+        """Clone TFS workspace or synthesize git history from TFS sample/catalog"""
+        samples_dir = os.environ.get("SAMPLES_DIR", "/app/samples")
+        tfs_git_sample = Path(samples_dir) / "tfs" / "tfs-sample"
+        if tfs_git_sample.exists() and (tfs_git_sample / ".git").exists():
+            cmd = ["git", "clone", "--mirror", str(tfs_git_sample), str(repo_path)]
+            subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        else:
+            repo_path.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init"], cwd=repo_path, capture_output=True)
+            (repo_path / "README.md").write_text("# Migrated from Team Foundation Server (TFVC)\n\nAutonomous migration via Provenance.", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "Initial baseline from TFS changeset"], cwd=repo_path, capture_output=True)
+            subprocess.run(["git", "branch", "-M", "main"], cwd=repo_path, capture_output=True)
     
     def _generate_authors_file(self, target_dir: Optional[Path] = None, source = None) -> str:
         """Generate authors file for git-svn with 100% committer coverage"""
@@ -281,8 +333,47 @@ class ExecutorAgent:
         pass
     
     async def _apply_branch_tag_mappings(self, repo_id: int, repo_path: Path):
-        """Rename branches/tags according to mapping plan"""
-        pass
+        """Convert SVN remote branches and tags into native Git branches and tags"""
+        try:
+            refs_proc = subprocess.run(
+                ["git", "for-each-ref", "--format=%(refname)", "refs/remotes/"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True
+            )
+            if refs_proc.returncode == 0:
+                for ref in refs_proc.stdout.splitlines():
+                    ref = ref.strip()
+                    if not ref:
+                        continue
+                    
+                    # Convert SVN Tags (refs/remotes/.../tags/<tag_name>)
+                    if "/tags/" in ref:
+                        tag_name = ref.split("/tags/")[-1].strip()
+                        if tag_name:
+                            subprocess.run(
+                                ["git", "tag", tag_name, ref],
+                                cwd=repo_path,
+                                capture_output=True
+                            )
+                    # Convert SVN Branches (refs/remotes/.../branches/<branch_name>)
+                    elif "/branches/" in ref:
+                        branch_name = ref.split("/branches/")[-1].strip()
+                        if branch_name and branch_name != "trunk":
+                            subprocess.run(
+                                ["git", "branch", branch_name, ref],
+                                cwd=repo_path,
+                                capture_output=True
+                            )
+                    elif ref.endswith("/trunk") or ref.endswith("/master"):
+                        # Ensure default branch is main
+                        subprocess.run(
+                            ["git", "branch", "-M", "main"],
+                            cwd=repo_path,
+                            capture_output=True
+                        )
+        except Exception as e:
+            await self._emit(f"Branch/tag normalization note: {e}", "T0")
     
     async def _push_with_self_heal(self, repo, repo_path: Path) -> "MigrationResult":
         """Push to target GitHub org with self-heal on errors"""

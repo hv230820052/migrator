@@ -50,7 +50,7 @@ export function GatesTab({ gates, loadingAction, onApproveGate }) {
                     <strong style={{ fontSize: '0.88rem', color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
                       GATE: {def.name}
                     </strong>
-                    <span className={`badge ${isApproved ? 'badge-t0' : 'badge-t3'}`}>
+                    <span className={`badge ${isApproved ? 'badge-success' : 'badge-t3'}`}>
                       {isApproved ? 'APPROVED' : 'PENDING'}
                     </span>
                   </div>
