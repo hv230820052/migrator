@@ -112,10 +112,10 @@ def generate_samples():
     def hash_dir(path: Path) -> str:
         h = hashlib.sha256()
         for child in sorted(path.rglob("*")):
-            if child.is_file() and ".git/" not in str(child.relative_to(path)) and ".git/logs" not in str(child):
+            if child.is_file() and ".git" not in child.parts:
                 # Exclude git internal state — only hash project content
                 try:
-                    h.update(str(child.relative_to(path)).encode())
+                    h.update(str(child.relative_to(path)).replace("\\", "/").encode())
                     h.update(child.read_bytes()[:1024])
                 except Exception:
                     pass

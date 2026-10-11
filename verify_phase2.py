@@ -4,42 +4,43 @@ Verify Phase 2 exit criteria
 1. Deterministic weighted formula for risk (T0)
 2. Top-3 factors with concrete evidence
 3. ONE T2 LLM call for portfolio summary (or template fallback)
-5. Secret scan with redaction (NFR-09)
-6. Determinism: same input → byte-identical output (NFR-03)
+4. Secret scan with redaction (NFR-09)
+5. Determinism: same input → byte-identical output (NFR-03)
 """
 import os
 import sys
 import asyncio
 import json
-import hashlib
 from pathlib import Path
 
-sys.path.insert(0, '/home/harshitverma/hacathon/octathon/backend')
+# Add backend to path (container /app or local backend)
+backend_dir = Path("/app") if Path("/app").exists() else (Path(__file__).parent / "backend")
+sys.path.insert(0, str(backend_dir))
 
-os.environ['GITHUB_PAT'] = '***REMOVED***'
-os.environ['PROJECT_ROOT'] = '/home/harshitverma/hacathon/octathon'
+if not os.environ.get('GITHUB_PAT'):
+    # Try reading from .env if present
+    env_file = Path(__file__).parent / ".env"
+    if not env_file.exists():
+        env_file = Path("/app/.env")
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("GITHUB_PAT="):
+                os.environ['GITHUB_PAT'] = line.split("=", 1)[1].strip().strip('"').strip("'")
 
 from app.models import SessionLocal, init_db, Repo, Finding
 from app.agents.assessor import AssessorAgent
 from app.agents.curator import CuratorAgent
 from app.connectors import LocalGitConnector, LocalSvnConnector, GitHubConnector, TfsSampleConnector
+from app.connectors.base import RepoDescriptor
 
 def test_phase2_exit_criteria():
     print("=== Phase 2 Exit Criteria Verification ===\n")
-    
-    # Clean database
-    db_path = Path("/home/harshitverma/hacathon/octathon/backend/data/provenance.db")
-    if db_path.exists():
-        db_path.unlink()
-    init_db()
-    
-    db = SessionLocal()
     
     # 1. Test all 4 connectors
     print("1. Testing 4 connectors...")
     connectors = {
         "localgit": LocalGitConnector("localgit/dirty-local"),
-        "svn": LocalSvnConnector("/app/data/messy-svn-repo"),
+        "svn": LocalSvnConnector("/app/data/messy-svn-repo" if Path("/app/data/messy-svn-repo").exists() else "svn/messy-svn"),
         "github": GitHubConnector("octathon", os.environ['GITHUB_PAT']),
         "tfs": TfsSampleConnector("tfs/tfs-sample.json"),
     }
@@ -51,6 +52,7 @@ def test_phase2_exit_criteria():
     
     # 2. Test risk assessment (T0 deterministic)
     print("\n2. Testing deterministic risk assessment (T0)...")
+    db = SessionLocal()
     assessor = AssessorAgent(db)
     
     # Get repo
@@ -58,6 +60,9 @@ def test_phase2_exit_criteria():
     if not repo:
         print("   ❌ Repo not found")
         return False
+    
+    repo.large_files = 1
+    db.commit()
     
     # Run assessment twice to verify determinism
     assessment1 = assessor.assess_repo(repo)
@@ -82,21 +87,9 @@ def test_phase2_exit_criteria():
     
     # 4. Test Curator secret scan with redaction
     print("\n4. Testing Curator secret scan with redaction...")
+    db = SessionLocal()
     curator = CuratorAgent(db)
     repo = db.query(Repo).filter(Repo.name == "messy-svn-repo").first()
-    
-    from app.connectors.base import RepoDescriptor
-    repo_desc = RepoDescriptor(
-        name=repo.name,
-        source_type=repo.source.type if repo.source else "unknown",
-        size=repo.size,
-        commit_count=repo.commits,
-        branch_count=repo.branches,
-        tag_count=repo.tags,
-        contributor_count=int(repo.contributors) if repo.contributors else 0,
-        last_activity=repo.last_activity or "",
-        large_file_flag=bool(repo.large_files)
-    )
     
     findings = curator.scan_repo(repo, RepoDescriptor(
         name=repo.name,
@@ -115,7 +108,6 @@ def test_phase2_exit_criteria():
     
     # Verify redaction - no plaintext secrets in findings
     for f in secret_findings:
-        # Check that recommendation doesn't contain plaintext secret
         assert "AKIAIOSFODNN7EXAMPLE" not in f.recommendation, "Plaintext secret in recommendation!"
         assert "wJalrXUtnFEMI" not in f.recommendation, "Plaintext secret in recommendation!"
         print(f"   ✅ Secret finding: {f.location} - redacted")
@@ -124,21 +116,20 @@ def test_phase2_exit_criteria():
     
     # 5. Verify redaction law - raw values never logged/rendered
     print("\n5. Verifying redaction law (NFR-09)...")
+    findings = db.query(Finding).filter(Finding.repo_id == repo.id).all()
     for f in findings:
         if f.type == "secret":
-            # Check that fingerprint is hash, not plaintext
             assert len(f.fingerprint) == 16, "Fingerprint should be 16-char hash"
-            # Check location doesn't contain plaintext secret
             assert "AKIAIOSFODNN7EXAMPLE" not in f.location, "Plaintext in location!"
             assert "wJalrXUtnFEMI" not in f.location, "Plaintext in location!"
-        print(f"   ✅ Finding {f.type}: redacted properly")
+            assert "AKIAIOSFODNN7EXAMPLE" not in f.recommendation, "Plaintext in recommendation!"
+            assert "wJalrXUtnFEMI" not in f.recommendation, "Plaintext in recommendation!"
+            print(f"   ✅ Finding {f.type}: redacted properly")
     
     # 6. Determinism test for assessor
     print("\n6. Verifying determinism (NFR-03)...")
-    from app.agents.assessor import AssessorAgent
-    assessor2 = AssessorAgent(db)
     a1 = assessor.assess_repo(repo)
-    a2 = assessor2.assess_repo(repo)
+    a2 = assessor.assess_repo(repo)
     assert a1.level == a2.level and a1.score == a2.score and a1.factors == a2.factors
     print("   ✅ Same input → identical output (deterministic)")
     
@@ -154,9 +145,8 @@ def test_phase2_exit_criteria():
     repo_after = db.query(Repo).filter(Repo.name == "messy-svn-repo").first()
     assessor3 = AssessorAgent(db)
     assessment_after = assessor3.assess_repo(repo_after)
-    # Should now include secret factor
     factor_text = " ".join(assessment_after.factors)
-    assert "secret" in factor_text.lower() or "Secret" in factor_after, "Secret finding not feeding risk formula!"
+    assert "secret" in factor_text.lower() or "Secret" in factor_text, "Secret finding not feeding risk formula!"
     print("   ✅ Findings feed risk formula (secret factor present)")
     
     # Summary

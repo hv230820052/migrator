@@ -95,6 +95,12 @@ export function useProvenanceRun(initialRunId = 1) {
     staleTime: 60 * 1000,
   });
 
+  // TanStack Query: 11. Prioritized Migration Waves (FR-20)
+  const { data: wavesData = null, refetch: refetchWaves } = useQuery({
+    queryKey: ['waves', runId],
+    queryFn: () => fetchJson(`${API_BASE}/api/waves`),
+  });
+
   // WebSocket Connection for streaming real-time event logs
   useEffect(() => {
     const wsUrl = `${WS_BASE}/api/runs/${runId}/events`;
@@ -301,6 +307,44 @@ export function useProvenanceRun(initialRunId = 1) {
     );
   };
 
+  const handleRefreshWaves = async () => {
+    setLoadingAction('refresh_waves');
+    try {
+      await refetchWaves();
+    } finally {
+      setLoadingAction('');
+    }
+  };
+
+  const handleMoveRepoWave = async (repoId, targetWaveIndex) => {
+    if (!wavesData?.waves) return;
+    const newWaves = JSON.parse(JSON.stringify(wavesData.waves));
+    let movedRepo = null;
+    
+    newWaves.forEach(w => {
+      const idx = (w.repos || []).findIndex(r => r.id === repoId);
+      if (idx !== -1) {
+        movedRepo = w.repos.splice(idx, 1)[0];
+      }
+    });
+
+    if (movedRepo && newWaves[targetWaveIndex]) {
+      if (!newWaves[targetWaveIndex].repos) newWaves[targetWaveIndex].repos = [];
+      newWaves[targetWaveIndex].repos.push(movedRepo);
+    }
+
+    try {
+      await fetch(`${API_BASE}/api/waves`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_id: runId, waves: newWaves })
+      });
+      queryClient.setQueryData(['waves', runId], { ...wavesData, waves: newWaves });
+    } catch (e) {
+      console.error('Failed to move repo between waves:', e);
+    }
+  };
+
   const copyToClipboard = (text) => {
     navigator.clipboard.writeText(text);
     setCopyFeedback(true);
@@ -326,6 +370,9 @@ export function useProvenanceRun(initialRunId = 1) {
     beforeAfter,
     insights,
     handleGenerateInsights,
+    wavesData,
+    handleRefreshWaves,
+    handleMoveRepoWave,
     loadingAction,
     copyFeedback,
     wsConnected,

@@ -141,6 +141,16 @@ logs/
 .env
 .env.prod
 .env.staging
+
+# Oversized binaries & generated sample packs (>100MB rejected by GitHub)
+*.bin
+samples/svn/messy-svn/repo/trunk/large_file.bin
 /samples/svn/messy-svn/repo-git-mirror/large_file.bin
+
+# SQLite runtime databases
+backend/data/*.db*
+backend/data/provenance.db
+backend/data/provenance.db-shm
+backend/data/provenance.db-wal
 
 /.env

@@ -30,6 +30,9 @@ from .agents.cartographer import CartographerAgent
 from .agents.gates import GatesAgent, GateType, GateStatus
 from .agents.executor import ExecutorAgent, MigrationResult
 from .agents.prover import ProverAgent
+from .agents.planner import WavePlannerAgent
+from .agents.healer import HealerAgent
+from .agents.ci_translator import CIPipelineTranslator
 from .cascade.router import DecisionRouter, get_router
 
 # Configure logging
@@ -653,6 +656,68 @@ async def get_migration_status(run_id: int, db: Session = Depends(get_db)):
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return {"run_id": run_id, "status": run.status}
+
+# --- FR-20 Wave Planning Endpoints ---
+@app.get("/api/runs/{run_id}/waves")
+@app.get("/api/waves")
+async def get_migration_waves(run_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """GET /api/waves or /api/runs/{id}/waves - Get prioritized migration waves (FR-20)"""
+    planner = WavePlannerAgent(db)
+    return planner.plan_waves(run_id)
+
+class WaveUpdateRequest(BaseModel):
+    run_id: Optional[int] = None
+    waves: List[Dict[str, Any]]
+
+@app.post("/api/runs/{run_id}/waves")
+@app.post("/api/waves")
+async def update_migration_waves(update_data: WaveUpdateRequest, run_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """POST /api/waves - Update migration waves"""
+    target_run_id = run_id or update_data.run_id
+    if target_run_id:
+        run = db.query(Run).filter(Run.id == target_run_id).first()
+        if run and hasattr(run, "wave_json"):
+            run.wave_json = json.dumps(update_data.waves)
+            db.commit()
+    return {"status": "updated", "waves": update_data.waves}
+
+# --- FR-07/US-06 Self-Healing & Failure Diagnosis Endpoints ---
+class DiagnosisRequest(BaseModel):
+    error_message: str
+    repo_name: str = "unknown"
+
+@app.post("/api/healer/diagnose")
+async def diagnose_failure(req: DiagnosisRequest, db: Session = Depends(get_db)):
+    """POST /api/healer/diagnose - Diagnoses error signature (T0 rules -> T2 AI diagnosis)"""
+    healer = HealerAgent(db, emit_event)
+    return await healer.diagnose_and_heal(req.error_message, req.repo_name)
+
+class SimulationRequest(BaseModel):
+    failure_type: str = "oversized_lfs"  # oversized_lfs, non_fast_forward, novel_error
+    repo_name: str = "messy-svn-repo"
+
+@app.post("/api/runs/{run_id}/healer/simulate")
+async def simulate_healer_failure(run_id: int, req: SimulationRequest, db: Session = Depends(get_db)):
+    """POST /api/runs/{id}/healer/simulate - Simulates failure injection and self-heal lifecycle"""
+    healer = HealerAgent(db, emit_event, run_id=run_id)
+    return await healer.simulate_failure(req.failure_type, req.repo_name)
+
+# --- F-11 CI/CD Pipeline Translation Endpoints ---
+class CiTranslateRequest(BaseModel):
+    gitlab_ci_yaml: str
+    repo_name: str = "migrated-repo"
+
+@app.get("/api/ci-translate/sample")
+async def get_sample_gitlab_ci():
+    """GET /api/ci-translate/sample - Returns ready-to-test GitLab CI pipeline sample"""
+    translator = CIPipelineTranslator()
+    return {"sample_gitlab_ci": translator.get_sample_pipeline()}
+
+@app.post("/api/ci-translate")
+async def translate_ci_pipeline(req: CiTranslateRequest):
+    """POST /api/ci-translate - Translates GitLab CI YAML to GitHub Actions YAML"""
+    translator = CIPipelineTranslator()
+    return translator.translate(req.gitlab_ci_yaml, req.repo_name)
 
 # Health check
 @app.get("/health")

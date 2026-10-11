@@ -5,10 +5,12 @@ import { NavigationTabs } from './components/NavigationTabs';
 import { OverviewTab } from './components/tabs/OverviewTab';
 import { SourcesTab } from './components/tabs/SourcesTab';
 import { CatalogTab } from './components/tabs/CatalogTab';
+import { WavePlanningTab } from './components/tabs/WavePlanningTab';
 import { FindingsTab } from './components/tabs/FindingsTab';
 import { MappingsTab } from './components/tabs/MappingsTab';
 import { GatesTab } from './components/tabs/GatesTab';
 import { ControlRoomTab } from './components/tabs/ControlRoomTab';
+import { CiTranslatorTab } from './components/tabs/CiTranslatorTab';
 import { CertificateTab } from './components/tabs/CertificateTab';
 
 export default function App() {
@@ -27,6 +29,9 @@ export default function App() {
     beforeAfter,
     insights,
     handleGenerateInsights,
+    wavesData,
+    handleRefreshWaves,
+    handleMoveRepoWave,
     loadingAction,
     copyFeedback,
     wsConnected,
@@ -100,7 +105,7 @@ export default function App() {
               triggerAction(
                 'Discovering Repositories',
                 () => fetch(`${API_BASE}/api/runs/${runId}/discover`, { method: 'POST' }),
-                [['catalog'], ['cascadeStats', runId]]
+                [['catalog'], ['cascadeStats', runId], ['waves', runId]]
               )
             }
           />
@@ -112,6 +117,17 @@ export default function App() {
             loadingAction={loadingAction}
             onReassess={handleGenerateInsights}
             onNavigateToOverview={() => setActiveTab('overview')}
+          />
+        )}
+
+        {activeTab === 'waves' && (
+          <WavePlanningTab
+            wavesData={wavesData}
+            loadingAction={loadingAction}
+            onRefreshWaves={handleRefreshWaves}
+            onMoveRepo={handleMoveRepoWave}
+            onApprovePlanGate={() => approveGate('PLAN')}
+            onNavigate={setActiveTab}
           />
         )}
 
@@ -157,6 +173,15 @@ export default function App() {
                 fetch(`${API_BASE}/api/runs/${runId}/migrate`, { method: 'POST' })
               )
             }
+            API_BASE={API_BASE}
+          />
+        )}
+
+        {activeTab === 'ci-translator' && (
+          <CiTranslatorTab
+            API_BASE={API_BASE}
+            copyToClipboard={copyToClipboard}
+            copyFeedback={copyFeedback}
           />
         )}
 

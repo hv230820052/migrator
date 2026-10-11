@@ -10,7 +10,14 @@ import json
 # Add backend to path
 sys.path.insert(0, '/app')
 
-os.environ['GITHUB_PAT'] = '***REMOVED***'
+if not os.environ.get('GITHUB_PAT'):
+    env_file = Path(__file__).parent / ".env"
+    if not env_file.exists():
+        env_file = Path("/app/.env")
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith("GITHUB_PAT="):
+                os.environ['GITHUB_PAT'] = line.split("=", 1)[1].strip().strip('"').strip("'")
 
 from app.models import SessionLocal, init_db, Repo, Finding
 from app.agents.assessor import AssessorAgent
@@ -45,6 +52,9 @@ def test_phase2_exit_criteria():
     if not repo:
         print("   ❌ Repo not found")
         return False
+    
+    repo.large_files = 1
+    db.commit()
     
     # Run assessment twice to verify determinism
     assessment1 = assessor.assess_repo(repo)

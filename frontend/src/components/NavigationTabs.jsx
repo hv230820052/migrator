@@ -4,10 +4,12 @@ import {
   LayoutDashboard,
   Network,
   Database,
+  Layers,
   ShieldAlert,
   Users,
   Lock,
   Terminal,
+  Workflow,
   FileCheck
 } from 'lucide-react';
 
@@ -15,10 +17,12 @@ const TABS = [
   { id: 'overview', label: 'Overview & Heatmap', icon: LayoutDashboard },
   { id: 'sources', label: 'Sources & Scout', icon: Network },
   { id: 'catalog', label: 'Repos & Risk', icon: Database },
+  { id: 'waves', label: 'Wave Planning', icon: Layers },
   { id: 'curator', label: 'Secrets & Findings', icon: ShieldAlert },
   { id: 'cartographer', label: 'Identity Mapping', icon: Users },
   { id: 'gates', label: 'Governance Gates', icon: Lock },
-  { id: 'control-room', label: 'Control Room Live', icon: Terminal },
+  { id: 'control-room', label: 'Control Room & Healer', icon: Terminal },
+  { id: 'ci-translator', label: 'CI/CD Translator', icon: Workflow },
   { id: 'proof', label: 'Proof & Certificate', icon: FileCheck },
 ];
 
