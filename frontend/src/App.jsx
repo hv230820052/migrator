@@ -179,7 +179,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Production Engineering Footer */}
+      {/* Clean Footer */}
       <footer style={{
         borderTop: '1px solid var(--border-subtle)',
         backgroundColor: 'var(--surface-primary)',
@@ -187,12 +187,11 @@ export default function App() {
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        fontSize: '0.72rem',
+        fontSize: '0.75rem',
         color: 'var(--text-tertiary)',
         fontFamily: 'var(--font-mono)'
       }}>
-        <div>Provenance Migration Platform · AIDLC Architecture · D-08 / D-09 Compliant</div>
-        <div>Strict Cascade Routing (T0 → T2 → T3) · 0 LLM Tokens in Verification</div>
+        <div>Provenance Migration Platform</div>
       </footer>
     </div>
   );
