@@ -224,11 +224,6 @@ export function MigrationTimelineTab({
       <div className="panel" style={{ padding: '2rem 2.5rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
-              <span className="badge badge-t2" style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem' }}>UX4G 3.0 DESIGN SYSTEM</span>
-              <span className="badge badge-t0" style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem' }}>PRACTICAL WORKFLOW</span>
-              <span className="badge badge-connected" style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem' }}>ZERO HARDCODED DATA</span>
-            </div>
             <h1 style={{ fontSize: '1.65rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.02em', margin: 0 }}>
               Live Migration Hub & Interactive Timeline
             </h1>
