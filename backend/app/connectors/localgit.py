@@ -5,7 +5,7 @@ READ-ONLY: scans filesystem for .git directories, uses git commands for metadata
 import subprocess
 import os
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from .base import SourceConnector, VCSAdapter, RepoDescriptor, ConnectionReport, AuthorInfo, run_cmd
 
 class LocalGitConnector(VCSAdapter):
@@ -197,17 +197,44 @@ class LocalGitConnector(VCSAdapter):
 
 
 
+def _parse_github_target(target: str) -> Tuple[str, Optional[str], bool]:
+    """Parse org/user/repo from input target string or URL.
+    Returns (owner, repo_name, is_single_repo)
+    """
+    clean = (target or "").strip()
+    for prefix in ["https://github.com/", "http://github.com/", "git@github.com:", "ssh://git@github.com/"]:
+        if clean.startswith(prefix):
+            clean = clean[len(prefix):]
+            break
+    clean = clean.removesuffix(".git").strip("/")
+    if "/" in clean:
+        parts = clean.split("/", 1)
+        owner = parts[0].strip()
+        repo = parts[1].strip()
+        return owner, repo, True
+    return clean, None, False
+
+
 class GitHubConnector(SourceConnector):
-    """GitHub source connector - uses GitHub REST API"""
+    """GitHub source connector - uses GitHub REST API.
+    Supports GitHub organizations, user accounts, and direct repository URLs.
+    """
     
     def __init__(self, org: str, token: str):
-        self.org = org
+        owner, repo_name, is_single_repo = _parse_github_target(org)
+        self.raw_target = org
+        self.owner = owner
+        self.repo_name = repo_name
+        self.is_single_repo = is_single_repo
+        self.org = owner  # maintain self.org attribute for backwards compatibility
         self.token = token
         self.api_base = "https://api.github.com"
         self.headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github+json"
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "Provenance-Migrator/1.0"
         }
+        if token:
+            self.headers["Authorization"] = f"token {token}"
     
     def _api_get(self, path: str) -> Optional[Dict]:
         """Make GET request to GitHub API"""
@@ -223,24 +250,27 @@ class GitHubConnector(SourceConnector):
             return None
     
     def validate(self) -> ConnectionReport:
-        """Validate GitHub org access"""
-        org_info = self._api_get(f"/orgs/{self.org}")
-        if org_info:
-            return ConnectionReport(
-                status="connected",
-                readable_scope=f"GitHub: {self.org} (public + private repos accessible)",
-                issues=[],
-                fixes=[]
-            )
-        else:
-            # Try user endpoint
+        """Validate GitHub access for org, user, or single repository"""
+        # Case A: Single repository specified (e.g. awinashnarute10/Microfrontend or https://github.com/.../Microfrontend.git)
+        if self.is_single_repo and self.repo_name:
+            repo_info = self._api_get(f"/repos/{self.owner}/{self.repo_name}")
+            if repo_info and not repo_info.get("message"):
+                vis = "private" if repo_info.get("private") else "public"
+                return ConnectionReport(
+                    status="connected",
+                    readable_scope=f"GitHub: {self.owner}/{self.repo_name} ({vis})",
+                    issues=[],
+                    fixes=[]
+                )
+            
+            # If repo lookup failed, check if token / user is valid
             user_info = self._api_get("/user")
             if user_info:
                 return ConnectionReport(
-                    status="partial",
-                    readable_scope=f"GitHub: {user_info.get('login')} (org access may be limited)",
-                    issues=[f"Organization {self.org} not accessible"],
-                    fixes=["Check token has org read access", "Verify org name"]
+                    status="failed",
+                    readable_scope=f"GitHub: {user_info.get('login')}",
+                    issues=[f"Repository {self.owner}/{self.repo_name} not accessible or not found"],
+                    fixes=["Check repository name, verify public access, or provide a token with 'repo' scope"]
                 )
             return ConnectionReport(
                 status="failed",
@@ -248,16 +278,70 @@ class GitHubConnector(SourceConnector):
                 issues=["GitHub authentication failed"],
                 fixes=["Check token validity", "Verify token has repo scope"]
             )
+
+        # Case B: Organization access
+        org_info = self._api_get(f"/orgs/{self.owner}")
+        if org_info and not org_info.get("message"):
+            return ConnectionReport(
+                status="connected",
+                readable_scope=f"GitHub: {self.owner} (public + private repos accessible)",
+                issues=[],
+                fixes=[]
+            )
+        
+        # Case C: GitHub user account
+        user_target = self._api_get(f"/users/{self.owner}")
+        if user_target and not user_target.get("message"):
+            return ConnectionReport(
+                status="connected",
+                readable_scope=f"GitHub user: {self.owner} (repositories accessible)",
+                issues=[],
+                fixes=[]
+            )
+
+        # Case D: Check authenticated user
+        user_info = self._api_get("/user")
+        if user_info and not user_info.get("message"):
+            return ConnectionReport(
+                status="partial",
+                readable_scope=f"GitHub: {user_info.get('login')} (target access may be limited)",
+                issues=[f"Organization or user {self.owner} not accessible"],
+                fixes=["Check token has org read access", "Verify user/org name"]
+            )
+        
+        return ConnectionReport(
+            status="failed",
+            readable_scope="",
+            issues=["GitHub authentication failed"],
+            fixes=["Check token validity", "Verify token has repo scope"]
+        )
     
     def discover(self) -> List[RepoDescriptor]:
-        """Discover repositories in GitHub org"""
+        """Discover repositories in GitHub org, user account, or single repo"""
         repos = []
         
-        # Get org repos (paginated)
+        # Case A: Single repository specified
+        if self.is_single_repo and self.repo_name:
+            repo_data = self._api_get(f"/repos/{self.owner}/{self.repo_name}")
+            if repo_data and not repo_data.get("message"):
+                repo_info = self._convert_github_repo(repo_data)
+                if repo_info:
+                    repos.append(repo_info)
+            return repos
+
+        # Case B: Organization or user repositories
         page = 1
+        is_user_endpoint = False
         while True:
-            data = self._api_get(f"/orgs/{self.org}/repos?per_page=100&page={page}&type=all")
-            if not data or len(data) == 0:
+            if not is_user_endpoint:
+                data = self._api_get(f"/orgs/{self.owner}/repos?per_page=100&page={page}&type=all")
+                if data is None and page == 1:
+                    is_user_endpoint = True
+                    data = self._api_get(f"/users/{self.owner}/repos?per_page=100&page={page}&sort=updated")
+            else:
+                data = self._api_get(f"/users/{self.owner}/repos?per_page=100&page={page}&sort=updated")
+
+            if not data or not isinstance(data, list) or len(data) == 0:
                 break
             
             for repo_data in data:
@@ -268,6 +352,8 @@ class GitHubConnector(SourceConnector):
             if len(data) < 100:
                 break
             page += 1
+            if page > 10:
+                break
         
         return repos
     
@@ -275,6 +361,7 @@ class GitHubConnector(SourceConnector):
         """Convert GitHub API repo to RepoDescriptor"""
         try:
             name = repo_data["name"]
+            owner = repo_data.get("owner", {}).get("login") or self.owner
             
             # Size (GitHub provides size in KB)
             size = repo_data.get("size", 0) * 1024
@@ -283,35 +370,33 @@ class GitHubConnector(SourceConnector):
             commit_count = 0
             try:
                 page = 1
-                while page <= 10:  # Limit to 10 pages (1000 commits max for Phase 1)
-                    commits = self._api_get(f"/repos/{self.org}/{name}/commits?per_page=100&page={page}")
-                    if not commits or len(commits) == 0:
+                while page <= 10:  # Limit to 10 pages (1000 commits max)
+                    commits = self._api_get(f"/repos/{owner}/{name}/commits?per_page=100&page={page}")
+                    if not commits or not isinstance(commits, list) or len(commits) == 0:
                         break
                     commit_count += len(commits)
                     if len(commits) < 100:
                         break
                     page += 1
-            except:
+            except Exception:
                 pass
             
             # Branch count
-            branches = self._api_get(f"/repos/{self.org}/{name}/branches?per_page=100")
-            branch_count = len(branches) if branches else 0
+            branches = self._api_get(f"/repos/{owner}/{name}/branches?per_page=100")
+            branch_count = len(branches) if branches and isinstance(branches, list) else 0
             
             # Tag count
-            tags = self._api_get(f"/repos/{self.org}/{name}/tags?per_page=100")
-            tag_count = len(tags) if tags else 0
+            tags = self._api_get(f"/repos/{owner}/{name}/tags?per_page=100")
+            tag_count = len(tags) if tags and isinstance(tags, list) else 0
             
             # Contributors
-            contributors = self._api_get(f"/repos/{self.org}/{name}/contributors?per_page=100")
-            contributor_count = len(contributors) if contributors else 0
+            contributors = self._api_get(f"/repos/{owner}/{name}/contributors?per_page=100")
+            contributor_count = len(contributors) if contributors and isinstance(contributors, list) else 0
             
             # Last activity
             last_activity = repo_data.get("pushed_at", "")
             
-            # Large file flag - GitHub doesn't expose directly
-            # We'll check via git ls-files in Phase 4
-            # For now, check if repo size > 100MB (rough proxy)
+            # Large file flag - check if repo size > 100MB
             large_file_flag = size > 100 * 1024 * 1024
             
             return RepoDescriptor(
@@ -328,6 +413,22 @@ class GitHubConnector(SourceConnector):
         except Exception:
             return None
     
+    def list_authors(self) -> List[AuthorInfo]:
+        """List authors for GitHub repository from contributors or commits"""
+        authors = []
+        try:
+            target_repo = self.repo_name
+            if target_repo:
+                contributors = self._api_get(f"/repos/{self.owner}/{target_repo}/contributors?per_page=100")
+                if contributors and isinstance(contributors, list):
+                    for c in contributors:
+                        login = c.get("login") or "unknown"
+                        commits = c.get("contributions", 1)
+                        authors.append(AuthorInfo(username=login, commits=commits))
+        except Exception:
+            pass
+        return authors
+
     def inspect(self, repo: RepoDescriptor) -> Dict[str, Any]:
         """Detailed inspection for Assessor (Phase 2)"""
         return {"repo": repo.name, "details": "T0 inspection complete"}

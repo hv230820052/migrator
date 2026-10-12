@@ -113,9 +113,7 @@ class ScoutAgent:
         elif source.type == "github":
             import os
             token = source.credentials_ref or os.environ.get("GITHUB_PAT", "")
-            if not token:
-                return None
-            return GitHubConnector(source.endpoint, token)
+            return GitHubConnector(source.endpoint, token or "")
         elif source.type == "tfs":
             return TfsSampleConnector(source.endpoint)
         elif source.type in ["gitlab", "bitbucket", "azure_devops", "git"]:

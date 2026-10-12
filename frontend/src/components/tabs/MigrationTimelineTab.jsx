@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import {
   Network,
@@ -16,14 +16,10 @@ import {
   Eye,
   EyeOff,
   Sparkles,
-  ArrowRight,
   ExternalLink,
   Download,
-  Copy,
-  Check,
   Server,
   Layers,
-  ChevronRight,
   AlertTriangle,
   GitBranch,
   GitCommit,

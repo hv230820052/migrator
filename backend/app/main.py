@@ -513,64 +513,114 @@ async def list_account_repos(
             if auth_token:
                 headers["Authorization"] = f"Bearer {auth_token}"
 
-            # If org/username is provided, try org repos first then user repos
-            targets = []
-            if org:
-                targets.append(("org", org))
-            if user and user != org:
-                targets.append(("user", user))
-            if auth_token and not targets:
-                targets.append(("authenticated_user", None))
+            # Parse org or user in case a full GitHub URL or slug was provided
+            def _clean_gh_target(raw_val: str):
+                v = (raw_val or "").strip()
+                for prefix in ["https://github.com/", "http://github.com/", "git@github.com:", "ssh://git@github.com/"]:
+                    if v.startswith(prefix):
+                        v = v[len(prefix):]
+                        break
+                return v.removesuffix(".git").strip("/")
 
-            for target_type, target_name in targets:
+            cleaned_target = _clean_gh_target(org or user)
+            if "/" in cleaned_target:
+                # Direct single repository URL or slug provided
+                c_owner, c_repo = cleaned_target.split("/", 1)
                 try:
-                    page = 1
-                    while page <= 5:  # max 5 pages = 500 repos
-                        if target_type == "org":
-                            gh_url = f"https://api.github.com/orgs/{target_name}/repos?per_page=100&page={page}&sort=updated&type=all"
-                        elif target_type == "user":
-                            gh_url = f"https://api.github.com/users/{target_name}/repos?per_page=100&page={page}&sort=updated"
-                        else:
-                            gh_url = f"https://api.github.com/user/repos?per_page=100&page={page}&sort=updated&affiliation=owner,collaborator"
-                        
-                        gh_req = urllib.request.Request(gh_url, headers=headers)
-                        with urllib.request.urlopen(gh_req, timeout=15) as r:
-                            gh_repos = json.loads(r.read().decode("utf-8"))
-                            if not gh_repos:
-                                break
-                            for gr in gh_repos:
-                                repos.append({
-                                    "name": gr.get("name"),
-                                    "display_name": gr.get("full_name"),
-                                    "endpoint": gr.get("clone_url"),
-                                    "last_updated": (gr.get("pushed_at") or gr.get("updated_at") or "")[:19].replace("T", " "),
-                                    "source_type": "github",
-                                    "description": gr.get("description") or "",
-                                    "provider": "GitHub",
-                                    "visibility": gr.get("visibility", "public"),
-                                    "language": gr.get("language") or "",
-                                    "stars": gr.get("stargazers_count", 0),
-                                    "forks": gr.get("forks_count", 0),
-                                    "size_kb": gr.get("size", 0),
-                                    "default_branch": gr.get("default_branch", "main"),
-                                    "archived": gr.get("archived", False)
-                                })
-                            if len(gh_repos) < 100:
-                                break
-                            page += 1
+                    gh_url = f"https://api.github.com/repos/{c_owner}/{c_repo}"
+                    gh_req = urllib.request.Request(gh_url, headers=headers)
+                    with urllib.request.urlopen(gh_req, timeout=15) as r:
+                        gr = json.loads(r.read().decode("utf-8"))
+                        repos.append({
+                            "name": gr.get("name"),
+                            "display_name": gr.get("full_name"),
+                            "endpoint": gr.get("clone_url"),
+                            "last_updated": (gr.get("pushed_at") or gr.get("updated_at") or "")[:19].replace("T", " "),
+                            "source_type": "github",
+                            "description": gr.get("description") or "",
+                            "provider": "GitHub",
+                            "visibility": gr.get("visibility", "public"),
+                            "language": gr.get("language") or "",
+                            "stars": gr.get("stargazers_count", 0),
+                            "forks": gr.get("forks_count", 0),
+                            "size_kb": gr.get("size", 0),
+                            "default_branch": gr.get("default_branch", "main"),
+                            "archived": gr.get("archived", False)
+                        })
                 except urllib.error.HTTPError as e:
-                    if e.code == 401:
-                        errors.append("GitHub authentication failed. Check your Personal Access Token.")
-                    elif e.code == 404:
-                        errors.append(f"GitHub user/org '{target_name}' not found.")
-                    elif e.code == 403:
-                        errors.append("GitHub API rate limit exceeded or token lacks required scopes (needs 'repo' scope).")
+                    if e.code == 404:
+                        errors.append(f"GitHub repository '{cleaned_target}' not found or private.")
                     else:
-                        errors.append(f"GitHub API error: HTTP {e.code}")
-                    logger.warning(f"GitHub account discovery error: {e}")
+                        errors.append(f"GitHub API error fetching '{cleaned_target}': HTTP {e.code}")
                 except Exception as e:
-                    errors.append(f"GitHub discovery failed: {str(e)}")
-                    logger.warning(f"GitHub account discovery error: {e}")
+                    errors.append(f"Failed to access GitHub repository '{cleaned_target}': {str(e)}")
+            else:
+                # Target is an organization or username
+                targets = []
+                if org:
+                    targets.append(("org", _clean_gh_target(org)))
+                if user and user != org:
+                    targets.append(("user", _clean_gh_target(user)))
+                if auth_token and not targets:
+                    targets.append(("authenticated_user", None))
+
+                for target_type, target_name in targets:
+                    try:
+                        page = 1
+                        is_user_fallback = False
+                        while page <= 5:  # max 5 pages = 500 repos
+                            if target_type == "org" and not is_user_fallback:
+                                gh_url = f"https://api.github.com/orgs/{target_name}/repos?per_page=100&page={page}&sort=updated&type=all"
+                            elif target_type == "user" or is_user_fallback:
+                                gh_url = f"https://api.github.com/users/{target_name}/repos?per_page=100&page={page}&sort=updated"
+                            else:
+                                gh_url = f"https://api.github.com/user/repos?per_page=100&page={page}&sort=updated&affiliation=owner,collaborator"
+                            
+                            gh_req = urllib.request.Request(gh_url, headers=headers)
+                            try:
+                                with urllib.request.urlopen(gh_req, timeout=15) as r:
+                                    gh_repos = json.loads(r.read().decode("utf-8"))
+                                    if not gh_repos:
+                                        break
+                                    for gr in gh_repos:
+                                        repos.append({
+                                            "name": gr.get("name"),
+                                            "display_name": gr.get("full_name"),
+                                            "endpoint": gr.get("clone_url"),
+                                            "last_updated": (gr.get("pushed_at") or gr.get("updated_at") or "")[:19].replace("T", " "),
+                                            "source_type": "github",
+                                            "description": gr.get("description") or "",
+                                            "provider": "GitHub",
+                                            "visibility": gr.get("visibility", "public"),
+                                            "language": gr.get("language") or "",
+                                            "stars": gr.get("stargazers_count", 0),
+                                            "forks": gr.get("forks_count", 0),
+                                            "size_kb": gr.get("size", 0),
+                                            "default_branch": gr.get("default_branch", "main"),
+                                            "archived": gr.get("archived", False)
+                                        })
+                                    if len(gh_repos) < 100:
+                                        break
+                                    page += 1
+                            except urllib.error.HTTPError as e:
+                                if e.code == 404 and target_type == "org" and not is_user_fallback and page == 1:
+                                    # Fall back to user repos if org returned 404
+                                    is_user_fallback = True
+                                    continue
+                                raise
+                    except urllib.error.HTTPError as e:
+                        if e.code == 401:
+                            errors.append("GitHub authentication failed. Check your Personal Access Token.")
+                        elif e.code == 404:
+                            errors.append(f"GitHub user/org '{target_name}' not found.")
+                        elif e.code == 403:
+                            errors.append("GitHub API rate limit exceeded or token lacks required scopes (needs 'repo' scope).")
+                        else:
+                            errors.append(f"GitHub API error: HTTP {e.code}")
+                        logger.warning(f"GitHub account discovery error: {e}")
+                    except Exception as e:
+                        errors.append(f"GitHub discovery failed: {str(e)}")
+                        logger.warning(f"GitHub account discovery error: {e}")
 
     # 3. GitLab Account Discovery (supports cloud + self-hosted)
     elif vcs_type == "gitlab":
@@ -1817,9 +1867,7 @@ def _create_connector(source_type: str, endpoint: str, credentials_ref: Optional
         return LocalGitConnector(endpoint)
     elif source_type == "github":
         token = credentials_ref or os.environ.get("GITHUB_PAT", "")
-        if not token:
-            return None
-        return GitHubConnector(endpoint, token)
+        return GitHubConnector(endpoint, token or "")
     elif source_type == "tfs":
         return TfsSampleConnector(endpoint)
     elif source_type in ["gitlab", "bitbucket", "azure_devops", "git"]:
