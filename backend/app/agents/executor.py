@@ -93,7 +93,7 @@ class ExecutorAgent:
                     await self._clone_localgit(source, repo_path)
                 elif source.type == "github":
                     await self._clone_github(source, repo_path, repo.name)
-                elif source.type in ["gitlab", "bitbucket", "git"]:
+                elif source.type in ["gitlab", "bitbucket", "azure_devops", "git"]:
                     await self._clone_git_remote(source, repo_path, repo.name)
                 elif source.type == "tfs":
                     await self._clone_tfs(source, repo_path)
@@ -216,7 +216,12 @@ class ExecutorAgent:
         if source.credentials_ref and url.startswith(("http://", "https://")):
             protocol, rest = url.split("://", 1)
             if "@" not in rest:
-                url = f"{protocol}://{source.credentials_ref}@{rest}"
+                creds = source.credentials_ref
+                if source.type == "gitlab" and ":" not in creds:
+                    creds = f"oauth2:{creds}"
+                elif source.type == "azure_devops" and ":" not in creds:
+                    creds = f":{creds}"
+                url = f"{protocol}://{creds}@{rest}"
         cmd = ["git", "clone", "--mirror", url, str(repo_path)]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if result.returncode != 0:

@@ -12,8 +12,39 @@ const fetchJson = async (url) => {
 
 export function useProvenanceRun(initialRunId = 1) {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState('timeline');
   const [runId, setRunId] = useState(initialRunId);
+  const getInitialTab = () => {
+    if (typeof window !== 'undefined' && window.location.hash) {
+      const hash = window.location.hash.replace('#', '').trim();
+      const validTabs = ['timeline', 'waves', 'control-room', 'catalog', 'ci-translator', 'proof'];
+      if (validTabs.includes(hash)) return hash;
+    }
+    return 'timeline';
+  };
+  const [activeTab, setActiveTabState] = useState(getInitialTab);
+
+  const setActiveTab = (tab) => {
+    setActiveTabState(tab);
+    if (typeof window !== 'undefined') {
+      window.history.pushState(null, '', `#${tab}`);
+    }
+  };
+
+  useEffect(() => {
+    const handleHash = () => {
+      const hash = window.location.hash.replace('#', '').trim();
+      const validTabs = ['timeline', 'waves', 'control-room', 'catalog', 'ci-translator', 'proof'];
+      if (validTabs.includes(hash)) {
+        setActiveTabState(hash);
+      }
+    };
+    window.addEventListener('popstate', handleHash);
+    window.addEventListener('hashchange', handleHash);
+    return () => {
+      window.removeEventListener('popstate', handleHash);
+      window.removeEventListener('hashchange', handleHash);
+    };
+  }, []);
   const [events, setEvents] = useState([]);
   const [loadingAction, setLoadingAction] = useState('');
   const [copyFeedback, setCopyFeedback] = useState(false);
@@ -41,6 +72,7 @@ export function useProvenanceRun(initialRunId = 1) {
 
   // Account repositories discovery states
   const [accountRepos, setAccountRepos] = useState([]);
+  const [accountReposErrors, setAccountReposErrors] = useState([]);
   const [isFetchingAccountRepos, setIsFetchingAccountRepos] = useState(false);
   const [pipelineElapsedSeconds, setPipelineElapsedSeconds] = useState(0);
   const [pipelineLiveStep, setPipelineLiveStep] = useState('');
@@ -150,7 +182,10 @@ export function useProvenanceRun(initialRunId = 1) {
   // TanStack Query: 12. Migrated SVN Tickets & Merge Requests (FR-08)
   const { data: ticketsData = { total_items: 0, tickets_migrated: 0, merge_requests_migrated: 0, items: [] }, refetch: refetchTickets } = useQuery({
     queryKey: ['tickets', runId, activeRepoId],
-    queryFn: () => fetchJson(`${API_BASE}/api/runs/${runId}/tickets?repo_id=${activeRepoId || ''}`).catch(() => ({ total_items: 0, tickets_migrated: 0, merge_requests_migrated: 0, items: [] })),
+    queryFn: () => {
+      const url = activeRepoId ? `${API_BASE}/api/runs/${runId}/tickets?repo_id=${activeRepoId}` : `${API_BASE}/api/runs/${runId}/tickets`;
+      return fetchJson(url).catch(() => ({ total_items: 0, tickets_migrated: 0, merge_requests_migrated: 0, items: [] }));
+    },
     refetchInterval: (isAutoRunning || stageStatuses.executor === 'running' || stageStatuses.prover === 'running') ? 2000 : false,
   });
 
@@ -416,8 +451,9 @@ export function useProvenanceRun(initialRunId = 1) {
   };
 
   // Account Repository Discovery from credentials alone (no manual URL copy-paste)
-  const handleFetchAccountRepos = async (type = customVcsType, username = '', password = '', token = '', serverUrl = '') => {
+  const handleFetchAccountRepos = async (type = customVcsType, username = '', password = '', token = '', serverUrl = '', organization = '') => {
     setIsFetchingAccountRepos(true);
+    setAccountReposErrors([]);
     setLoadingAction('Scanning VCS account repositories...');
     try {
       let u = username;
@@ -437,15 +473,20 @@ export function useProvenanceRun(initialRunId = 1) {
           username: u,
           password: p,
           token: token || customCreds,
-          server_url: serverUrl
+          server_url: serverUrl,
+          organization: organization
         })
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAccountRepos(data.repos || []);
+      if (data.errors && data.errors.length > 0) {
+        setAccountReposErrors(data.errors);
+      }
       return data.repos || [];
     } catch (err) {
       console.warn('Failed to fetch account repos:', err);
+      setAccountReposErrors([err.message || 'Failed to fetch repositories']);
       return [];
     } finally {
       setIsFetchingAccountRepos(false);
@@ -727,6 +768,8 @@ export function useProvenanceRun(initialRunId = 1) {
     handleClearDatabase,
     accountRepos,
     setAccountRepos,
+    accountReposErrors,
+    setAccountReposErrors,
     isFetchingAccountRepos,
     handleFetchAccountRepos,
     pipelineElapsedSeconds,

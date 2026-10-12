@@ -118,7 +118,7 @@ class ScoutAgent:
             return GitHubConnector(source.endpoint, token)
         elif source.type == "tfs":
             return TfsSampleConnector(source.endpoint)
-        elif source.type in ["gitlab", "bitbucket", "git"]:
+        elif source.type in ["gitlab", "bitbucket", "azure_devops", "git"]:
             return GitRemoteConnector(source.endpoint, source.credentials_ref, source.type)
         return None
 

@@ -345,7 +345,12 @@ class GitRemoteConnector(VCSAdapter):
         if self.credentials_ref and url.startswith(("http://", "https://")):
             protocol, rest = url.split("://", 1)
             if "@" not in rest:
-                url = f"{protocol}://{self.credentials_ref}@{rest}"
+                creds = self.credentials_ref
+                if self.source_type == "gitlab" and ":" not in creds:
+                    creds = f"oauth2:{creds}"
+                elif self.source_type == "azure_devops" and ":" not in creds:
+                    creds = f":{creds}"
+                url = f"{protocol}://{creds}@{rest}"
         return url
 
     def validate(self) -> ConnectionReport:
@@ -396,6 +401,37 @@ class GitRemoteConnector(VCSAdapter):
 
     def list_authors(self, repo_url: Optional[str] = None) -> List[AuthorInfo]:
         """Extract unique list of authors using git log if cloned or empty list"""
+        target = Path(repo_url) if repo_url else None
+        if target and (target / ".git").exists():
+            try:
+                cmd = ["git", "--git-dir", str(target / ".git"), "log", "--format=%an|%ad", "--date=iso"]
+                res = run_cmd(cmd, timeout=20)
+                if res.returncode == 0:
+                    authors_data: Dict[str, Dict[str, Any]] = {}
+                    for line in res.stdout.splitlines():
+                        if "|" in line:
+                            an, ad = line.split("|", 1)
+                            an, ad = an.strip(), ad.strip()
+                            if not an:
+                                continue
+                            if an not in authors_data:
+                                authors_data[an] = {"username": an, "commits": 0, "dates": []}
+                            authors_data[an]["commits"] += 1
+                            if ad:
+                                authors_data[an]["dates"].append(ad)
+                    result = []
+                    for username, data in authors_data.items():
+                        dates = sorted(data["dates"])
+                        result.append(AuthorInfo(
+                            username=username,
+                            commits=data["commits"],
+                            first_commit_date=dates[0] if dates else None,
+                            last_commit_date=dates[-1] if dates else None
+                        ))
+                    result.sort(key=lambda x: x.commits, reverse=True)
+                    return result
+            except Exception:
+                pass
         return []
 
 

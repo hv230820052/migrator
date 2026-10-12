@@ -384,11 +384,12 @@ async def get_source_repos(source_id: int, db: Session = Depends(get_db)):
     ]
 
 class AccountReposRequest(BaseModel):
-    type: str = "svn"  # svn, github, gitlab, bitbucket, localgit
+    type: str = "svn"  # svn, github, gitlab, bitbucket, azure_devops, localgit
     username: Optional[str] = ""
     password: Optional[str] = ""
     token: Optional[str] = ""
     server_url: Optional[str] = ""
+    organization: Optional[str] = ""
 
 @app.post("/api/sources/list-account-repos")
 @app.get("/api/sources/list-account-repos")
@@ -398,20 +399,23 @@ async def list_account_repos(
     username: Optional[str] = None,
     password: Optional[str] = None,
     token: Optional[str] = None,
-    server_url: Optional[str] = None
+    server_url: Optional[str] = None,
+    organization: Optional[str] = None
 ):
-    """Dynamically discover and list all repositories in a user's account using credentials alone"""
+    """Dynamically discover and list all repositories in a user's account using real VCS API credentials"""
     vcs_type = (req.type if req else type) or "svn"
     user = ((req.username if req else username) or "").strip()
     pwd = ((req.password if req else password) or "").strip()
     tok = ((req.token if req else token) or "").strip()
     srv = ((req.server_url if req else server_url) or "").strip()
+    org = ((req.organization if req else organization) or "").strip()
     
     # If token has username:password format
     if tok and ":" in tok and not user:
         user, pwd = tok.split(":", 1)
     
     repos = []
+    errors = []
     
     # 1. SVN Account Discovery
     if vcs_type == "svn":
@@ -458,10 +462,17 @@ async def list_account_repos(
                                 "description": "SourceForge Subversion Repository",
                                 "provider": "SourceForge"
                             })
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    errors.append(f"SourceForge user '{user}' not found. Check your username.")
+                else:
+                    errors.append(f"SourceForge API error: HTTP {e.code}")
+                logger.warning(f"SourceForge profile discovery note for {user}: {e}")
             except Exception as e:
+                errors.append(f"SourceForge discovery failed: {str(e)}")
                 logger.warning(f"SourceForge profile discovery note for {user}: {e}")
 
-        # If custom SVN server URL provided or if repos empty
+        # If custom SVN server URL provided
         if srv:
             try:
                 cmd = ["svn", "list", "--non-interactive", "--trust-server-cert"]
@@ -479,117 +490,294 @@ async def list_account_repos(
                                 "name": entry,
                                 "display_name": entry,
                                 "endpoint": f"{srv.rstrip('/')}/{entry}",
-                                "last_updated": "Remote SVN",
+                                "last_updated": "",
                                 "source_type": "svn",
                                 "description": f"Repository on {srv}",
-                                "provider": "Custom SVN"
+                                "provider": "Custom SVN Server"
                             })
+                else:
+                    errors.append(f"SVN server returned error: {res.stderr.strip() or 'Access denied or URL unreachable'}")
+            except subprocess.TimeoutExpired:
+                errors.append(f"SVN server at {srv} timed out after 12 seconds")
             except Exception as e:
+                errors.append(f"SVN server discovery failed: {str(e)}")
                 logger.warning(f"Custom SVN server discovery note: {e}")
 
-        # Check local SVN repositories
-        for local_dir in [Path("/app/data/messy-svn-repo"), Path("/app/data/demo-svn-repo")]:
-            if local_dir.exists():
-                rname = local_dir.name
-                if not any(r["name"] == rname for r in repos):
-                    repos.append({
-                        "name": rname,
-                        "display_name": f"{rname} (Local SVN Sample)",
-                        "endpoint": f"file://{local_dir}",
-                        "last_updated": "Local Workspace",
-                        "source_type": "svn",
-                        "description": "Local test SVN repository",
-                        "provider": "Local SVN"
-                    })
-
-    # 2. GitHub Account Discovery
+    # 2. GitHub Account Discovery (supports PAT for user repos + org repos)
     elif vcs_type == "github":
         auth_token = tok or pwd or os.environ.get("GITHUB_PAT", "")
-        headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "Provenance-Migrator/1.0"}
-        if auth_token:
-            headers["Authorization"] = f"Bearer {auth_token}"
-        try:
-            gh_url = "https://api.github.com/user/repos?per_page=50&sort=updated" if auth_token else f"https://api.github.com/users/{user}/repos?per_page=50&sort=updated"
-            gh_req = urllib.request.Request(gh_url, headers=headers)
-            with urllib.request.urlopen(gh_req, timeout=10) as r:
-                gh_repos = json.loads(r.read().decode("utf-8"))
-                for gr in gh_repos:
-                    repos.append({
-                        "name": gr.get("name"),
-                        "display_name": gr.get("full_name"),
-                        "endpoint": gr.get("clone_url"),
-                        "last_updated": (gr.get("updated_at") or "")[:19].replace("T", " "),
-                        "source_type": "github",
-                        "description": gr.get("description") or f"GitHub Repository ({gr.get('visibility', 'public')})",
-                        "provider": "GitHub"
-                    })
-        except Exception as e:
-            logger.warning(f"GitHub account discovery error: {e}")
+        if not auth_token and not user:
+            errors.append("Provide a Personal Access Token (PAT) or a public GitHub username to discover repositories.")
+        else:
+            headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "Provenance-Migrator/1.0"}
+            if auth_token:
+                headers["Authorization"] = f"Bearer {auth_token}"
 
-    # 3. GitLab Account Discovery
+            # If org/username is provided, try org repos first then user repos
+            targets = []
+            if org:
+                targets.append(("org", org))
+            if user and user != org:
+                targets.append(("user", user))
+            if auth_token and not targets:
+                targets.append(("authenticated_user", None))
+
+            for target_type, target_name in targets:
+                try:
+                    page = 1
+                    while page <= 5:  # max 5 pages = 500 repos
+                        if target_type == "org":
+                            gh_url = f"https://api.github.com/orgs/{target_name}/repos?per_page=100&page={page}&sort=updated&type=all"
+                        elif target_type == "user":
+                            gh_url = f"https://api.github.com/users/{target_name}/repos?per_page=100&page={page}&sort=updated"
+                        else:
+                            gh_url = f"https://api.github.com/user/repos?per_page=100&page={page}&sort=updated&affiliation=owner,collaborator"
+                        
+                        gh_req = urllib.request.Request(gh_url, headers=headers)
+                        with urllib.request.urlopen(gh_req, timeout=15) as r:
+                            gh_repos = json.loads(r.read().decode("utf-8"))
+                            if not gh_repos:
+                                break
+                            for gr in gh_repos:
+                                repos.append({
+                                    "name": gr.get("name"),
+                                    "display_name": gr.get("full_name"),
+                                    "endpoint": gr.get("clone_url"),
+                                    "last_updated": (gr.get("pushed_at") or gr.get("updated_at") or "")[:19].replace("T", " "),
+                                    "source_type": "github",
+                                    "description": gr.get("description") or "",
+                                    "provider": "GitHub",
+                                    "visibility": gr.get("visibility", "public"),
+                                    "language": gr.get("language") or "",
+                                    "stars": gr.get("stargazers_count", 0),
+                                    "forks": gr.get("forks_count", 0),
+                                    "size_kb": gr.get("size", 0),
+                                    "default_branch": gr.get("default_branch", "main"),
+                                    "archived": gr.get("archived", False)
+                                })
+                            if len(gh_repos) < 100:
+                                break
+                            page += 1
+                except urllib.error.HTTPError as e:
+                    if e.code == 401:
+                        errors.append("GitHub authentication failed. Check your Personal Access Token.")
+                    elif e.code == 404:
+                        errors.append(f"GitHub user/org '{target_name}' not found.")
+                    elif e.code == 403:
+                        errors.append("GitHub API rate limit exceeded or token lacks required scopes (needs 'repo' scope).")
+                    else:
+                        errors.append(f"GitHub API error: HTTP {e.code}")
+                    logger.warning(f"GitHub account discovery error: {e}")
+                except Exception as e:
+                    errors.append(f"GitHub discovery failed: {str(e)}")
+                    logger.warning(f"GitHub account discovery error: {e}")
+
+    # 3. GitLab Account Discovery (supports cloud + self-hosted)
     elif vcs_type == "gitlab":
         gl_token = tok or pwd
-        if gl_token:
+        if not gl_token:
+            errors.append("Provide a GitLab Personal Access Token (PAT) with 'read_api' scope to discover projects.")
+        else:
+            # Determine GitLab API base URL (support self-hosted)
+            gl_base = srv.rstrip("/") if srv else "https://gitlab.com"
+            if not gl_base.startswith(("http://", "https://")):
+                gl_base = f"https://{gl_base}"
+            
             try:
-                gl_url = "https://gitlab.com/api/v4/projects?membership=true&per_page=50&order_by=updated_at"
-                gl_req = urllib.request.Request(gl_url, headers={"PRIVATE-TOKEN": gl_token, "User-Agent": "Provenance/1.0"})
-                with urllib.request.urlopen(gl_req, timeout=10) as r:
-                    gl_projects = json.loads(r.read().decode("utf-8"))
-                    for gp in gl_projects:
-                        repos.append({
-                            "name": gp.get("name"),
-                            "display_name": gp.get("path_with_namespace"),
-                            "endpoint": gp.get("http_url_to_repo"),
-                            "last_updated": (gp.get("last_activity_at") or "")[:19].replace("T", " "),
-                            "source_type": "gitlab",
-                            "description": gp.get("description") or "GitLab Project",
-                            "provider": "GitLab"
-                        })
+                page = 1
+                while page <= 5:
+                    gl_url = f"{gl_base}/api/v4/projects?membership=true&per_page=100&page={page}&order_by=updated_at&sort=desc"
+                    gl_req = urllib.request.Request(gl_url, headers={"PRIVATE-TOKEN": gl_token, "User-Agent": "Provenance-Migrator/1.0"})
+                    with urllib.request.urlopen(gl_req, timeout=15) as r:
+                        gl_projects = json.loads(r.read().decode("utf-8"))
+                        if not gl_projects:
+                            break
+                        for gp in gl_projects:
+                            # Build proper clone URL for self-hosted instances
+                            clone_url = gp.get("http_url_to_repo", "")
+                            repos.append({
+                                "name": gp.get("name"),
+                                "display_name": gp.get("path_with_namespace"),
+                                "endpoint": clone_url,
+                                "last_updated": (gp.get("last_activity_at") or "")[:19].replace("T", " "),
+                                "source_type": "gitlab",
+                                "description": gp.get("description") or "",
+                                "provider": "GitLab" if "gitlab.com" in gl_base else f"GitLab ({gl_base.split('//')[1].split('/')[0]})",
+                                "visibility": gp.get("visibility", "private"),
+                                "language": "",
+                                "stars": gp.get("star_count", 0),
+                                "forks": gp.get("forks_count", 0),
+                                "default_branch": gp.get("default_branch", "main"),
+                                "archived": gp.get("archived", False)
+                            })
+                        if len(gl_projects) < 100:
+                            break
+                        page += 1
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    errors.append("GitLab authentication failed. Check your Personal Access Token (needs 'read_api' scope).")
+                elif e.code == 403:
+                    errors.append("GitLab token lacks permissions. Ensure it has 'read_api' scope.")
+                else:
+                    errors.append(f"GitLab API error: HTTP {e.code}")
+                logger.warning(f"GitLab discovery error: {e}")
             except Exception as e:
+                errors.append(f"GitLab discovery failed: {str(e)}")
                 logger.warning(f"GitLab discovery error: {e}")
 
-    # 4. Bitbucket Account Discovery
+    # 4. Bitbucket Account Discovery (supports Cloud with app password or OAuth token)
     elif vcs_type == "bitbucket":
-        if user and pwd:
+        bb_workspace = org or user
+        if not bb_workspace:
+            errors.append("Provide your Bitbucket workspace name (usually your username) and an App Password.")
+        else:
             try:
-                bb_url = f"https://api.bitbucket.org/2.0/repositories/{user}?pagelen=50"
-                cred_bytes = f"{user}:{pwd}".encode("utf-8")
-                bb_req = urllib.request.Request(bb_url, headers={"Authorization": f"Basic {base64.b64encode(cred_bytes).decode()}", "User-Agent": "Provenance/1.0"})
-                with urllib.request.urlopen(bb_req, timeout=10) as r:
-                    bb_data = json.loads(r.read().decode("utf-8"))
-                    for br in bb_data.get("values", []):
-                        clone_links = [link.get("href") for link in br.get("links", {}).get("clone", []) if link.get("name") == "https"]
-                        repos.append({
-                            "name": br.get("name"),
-                            "display_name": br.get("full_name"),
-                            "endpoint": clone_links[0] if clone_links else f"https://bitbucket.org/{br.get('full_name')}.git",
-                            "last_updated": (br.get("updated_on") or "")[:19].replace("T", " "),
-                            "source_type": "bitbucket",
-                            "description": br.get("description") or "Bitbucket Repository",
-                            "provider": "Bitbucket"
-                        })
+                page_url = f"https://api.bitbucket.org/2.0/repositories/{bb_workspace}?pagelen=100&sort=-updated_on"
+                bb_headers = {"User-Agent": "Provenance-Migrator/1.0"}
+                
+                # Auth: prefer username+app_password, fallback to Bearer token
+                if user and (pwd or tok):
+                    cred_str = f"{user}:{pwd or tok}"
+                    bb_headers["Authorization"] = f"Basic {base64.b64encode(cred_str.encode('utf-8')).decode()}"
+                elif tok:
+                    bb_headers["Authorization"] = f"Bearer {tok}"
+                
+                pages_fetched = 0
+                while page_url and pages_fetched < 5:
+                    bb_req = urllib.request.Request(page_url, headers=bb_headers)
+                    with urllib.request.urlopen(bb_req, timeout=15) as r:
+                        bb_data = json.loads(r.read().decode("utf-8"))
+                        for br in bb_data.get("values", []):
+                            clone_links = [link.get("href") for link in br.get("links", {}).get("clone", []) if link.get("name") == "https"]
+                            scm = br.get("scm", "git")
+                            repos.append({
+                                "name": br.get("name"),
+                                "display_name": br.get("full_name"),
+                                "endpoint": clone_links[0] if clone_links else f"https://bitbucket.org/{br.get('full_name')}.git",
+                                "last_updated": (br.get("updated_on") or "")[:19].replace("T", " "),
+                                "source_type": "bitbucket",
+                                "description": br.get("description") or "",
+                                "provider": "Bitbucket Cloud",
+                                "visibility": "private" if br.get("is_private") else "public",
+                                "language": br.get("language") or "",
+                                "scm": scm,
+                                "size_bytes": br.get("size", 0),
+                                "default_branch": br.get("mainbranch", {}).get("name", "main") if br.get("mainbranch") else "main"
+                            })
+                        page_url = bb_data.get("next")
+                        pages_fetched += 1
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    errors.append("Bitbucket authentication failed. Use your username + App Password (not your account password).")
+                elif e.code == 403:
+                    errors.append("Bitbucket access denied. Ensure your App Password has 'Repositories: Read' permission.")
+                elif e.code == 404:
+                    errors.append(f"Bitbucket workspace '{bb_workspace}' not found. Check the workspace/username.")
+                else:
+                    errors.append(f"Bitbucket API error: HTTP {e.code}")
+                logger.warning(f"Bitbucket discovery error: {e}")
             except Exception as e:
+                errors.append(f"Bitbucket discovery failed: {str(e)}")
                 logger.warning(f"Bitbucket discovery error: {e}")
 
-    # 5. Local Git Discovery
-    elif vcs_type == "localgit":
-        local_sample = Path("/app/samples/localgit")
-        if local_sample.exists():
-            repos.append({
-                "name": "localgit-sample",
-                "display_name": "localgit-sample (Fixture Repository)",
-                "endpoint": str(local_sample),
-                "last_updated": "Local Disk",
-                "source_type": "localgit",
-                "description": "Local Git mirror fixture",
-                "provider": "Local Git"
-            })
+    # 5. Azure DevOps Account Discovery
+    elif vcs_type == "azure_devops":
+        ado_org = org or user
+        ado_pat = tok or pwd
+        if not ado_org or not ado_pat:
+            errors.append("Provide your Azure DevOps Organization name and a Personal Access Token (PAT) with 'Code: Read' scope.")
+        else:
+            try:
+                # List all projects in the org
+                ado_url = f"https://dev.azure.com/{ado_org}/_apis/projects?api-version=7.0&$top=100"
+                cred_b64 = base64.b64encode(f":{ado_pat}".encode("utf-8")).decode()
+                ado_headers = {"Authorization": f"Basic {cred_b64}", "User-Agent": "Provenance-Migrator/1.0"}
+                
+                ado_req = urllib.request.Request(ado_url, headers=ado_headers)
+                with urllib.request.urlopen(ado_req, timeout=15) as r:
+                    content_type = r.headers.get("Content-Type", "")
+                    if "application/json" not in content_type:
+                        errors.append("Azure DevOps authentication failed. Check your Organization name and Personal Access Token (needs 'Code: Read' scope).")
+                    else:
+                        projects_data = json.loads(r.read().decode("utf-8"))
+                        for proj in projects_data.get("value", []):
+                            proj_name = proj.get("name", "")
+                            # List repos within each project
+                            try:
+                                repos_url = f"https://dev.azure.com/{ado_org}/{proj_name}/_apis/git/repositories?api-version=7.0"
+                                repos_req = urllib.request.Request(repos_url, headers=ado_headers)
+                                with urllib.request.urlopen(repos_req, timeout=10) as rr:
+                                    if "application/json" in rr.headers.get("Content-Type", ""):
+                                        repos_data = json.loads(rr.read().decode("utf-8"))
+                                        for repo_item in repos_data.get("value", []):
+                                            clone_url = repo_item.get("remoteUrl", "")
+                                            repos.append({
+                                                "name": repo_item.get("name"),
+                                                "display_name": f"{proj_name}/{repo_item.get('name')}",
+                                                "endpoint": clone_url,
+                                                "last_updated": "",
+                                                "source_type": "azure_devops",
+                                                "description": f"Azure DevOps Git repo in project '{proj_name}'",
+                                                "provider": "Azure DevOps",
+                                                "visibility": "private" if proj.get("visibility") == "private" else "public",
+                                                "default_branch": (repo_item.get("defaultBranch") or "refs/heads/main").replace("refs/heads/", ""),
+                                                "project": proj_name
+                                            })
+                            except Exception as e_inner:
+                                logger.warning(f"Azure DevOps: failed to list repos in project {proj_name}: {e_inner}")
+            except urllib.error.HTTPError as e:
+                if e.code in [401, 203]:
+                    errors.append("Azure DevOps authentication failed. Check your PAT (needs 'Code: Read' scope).")
+                elif e.code == 404:
+                    errors.append(f"Azure DevOps organization '{ado_org}' not found.")
+                else:
+                    errors.append(f"Azure DevOps API error: HTTP {e.code}")
+                logger.warning(f"Azure DevOps discovery error: {e}")
+            except json.JSONDecodeError:
+                errors.append("Azure DevOps authentication failed or organization not found. Check organization name and PAT (needs 'Code: Read' scope).")
+            except Exception as e:
+                errors.append(f"Azure DevOps discovery failed: {str(e)}")
+                logger.warning(f"Azure DevOps discovery error: {e}")
 
+    # 6. Local Git Discovery (scan filesystem path)
+    elif vcs_type == "localgit":
+        scan_path = srv or user or "/app/samples/localgit"
+        target = Path(scan_path)
+        if target.exists() and target.is_dir():
+            # Check if this is directly a git repo
+            if (target / ".git").exists() or (target / "HEAD").exists():
+                repos.append({
+                    "name": target.name,
+                    "display_name": f"{target.name} (Local Git)",
+                    "endpoint": str(target),
+                    "last_updated": "",
+                    "source_type": "localgit",
+                    "description": "Local Git repository",
+                    "provider": "Local Git"
+                })
+            else:
+                # Scan for child git repos
+                for git_dir in target.rglob(".git"):
+                    repo_path = git_dir.parent
+                    repos.append({
+                        "name": repo_path.name,
+                        "display_name": f"{repo_path.name} (Local Git)",
+                        "endpoint": str(repo_path),
+                        "last_updated": "",
+                        "source_type": "localgit",
+                        "description": f"Local Git repository at {repo_path}",
+                        "provider": "Local Git"
+                    })
+        else:
+            errors.append(f"Local path '{scan_path}' does not exist or is not a directory.")
+
+    status = "success" if repos else ("error" if errors else "empty")
     return {
-        "status": "success",
+        "status": status,
         "count": len(repos),
         "source_type": vcs_type,
-        "repos": repos
+        "repos": repos,
+        "errors": errors
     }
 
 @app.get("/api/sources")
@@ -1634,7 +1822,7 @@ def _create_connector(source_type: str, endpoint: str, credentials_ref: Optional
         return GitHubConnector(endpoint, token)
     elif source_type == "tfs":
         return TfsSampleConnector(endpoint)
-    elif source_type in ["gitlab", "bitbucket", "git"]:
+    elif source_type in ["gitlab", "bitbucket", "azure_devops", "git"]:
         return GitRemoteConnector(endpoint, credentials_ref, source_type)
     return None
 

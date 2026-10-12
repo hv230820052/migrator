@@ -1,6 +1,26 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Activity, ShieldCheck, Cpu, Play, Loader2, RotateCcw } from 'lucide-react';
+import {
+  Menu,
+  ChevronRight,
+  ShieldCheck,
+  Cpu,
+  Play,
+  Loader2,
+  RotateCcw,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Home
+} from 'lucide-react';
+
+const TAB_TITLES = {
+  'timeline': 'Live Migration Hub',
+  'waves': 'Portfolio & Wave Planning',
+  'control-room': 'Control Room & Telemetry',
+  'catalog': 'Repository Catalog & Risk',
+  'ci-translator': 'CI/CD Pipeline Translator',
+  'proof': 'Parity Proof & Certificate'
+};
 
 export function Header({
   wsConnected,
@@ -10,84 +30,71 @@ export function Header({
   cascadeStats,
   loadingAction,
   onRunPipeline,
-  onClearDatabase
+  onClearDatabase,
+  activeTab = 'timeline',
+  isSidebarCollapsed = false,
+  onToggleSidebar = () => {},
+  onOpenMobileMenu = () => {}
 }) {
+  const currentTitle = TAB_TITLES[activeTab] || 'Mission Control';
+
   return (
-    <header style={{
-      backgroundColor: 'var(--surface-primary)',
-      borderBottom: '1px solid var(--border-subtle)',
-      padding: '0.95rem 2.25rem',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      position: 'sticky',
-      top: 0,
-      zIndex: 50
-    }}>
-        {/* Brand & Connection State */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-            <div style={{
-              width: '10px',
-              height: '10px',
-              borderRadius: '50%',
-              backgroundColor: wsConnected ? 'var(--status-success)' : 'var(--text-tertiary)',
-              boxShadow: wsConnected ? '0 0 8px rgba(0, 136, 0, 0.4)' : 'none',
-              border: wsConnected ? '1px solid #008800' : '1px solid var(--border-subtle)'
-            }} />
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{
-                  fontSize: '1.08rem',
-                  fontWeight: 800,
-                  letterSpacing: '0.02em',
-                  color: 'var(--brand-primary)',
-                  fontFamily: 'var(--font-sans)'
-                }}>
-                  PROVENANCE MIGRATOR
-                </span>
-                <span
-                  className={`badge ${wsConnected ? 'badge-connected' : 'badge-t3'}`}
-                  style={{ fontSize: '0.62rem', padding: '0.12rem 0.48rem' }}
-                >
-                  {wsConnected ? 'Connected' : 'Offline'}
-                </span>
-              </div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>
-                Autonomous VCS to GitHub Migration Engine
-              </div>
-            </div>
+    <header className="app-header">
+      {/* Left: Mobile Menu, Sidebar Toggle, & Breadcrumbs */}
+      <div className="header-left-zone">
+        {/* Mobile Hamburger Menu Toggle */}
+        <button
+          type="button"
+          onClick={onOpenMobileMenu}
+          className="header-icon-btn mobile-menu-toggle"
+          aria-label="Open navigation sidebar"
+          title="Open menu"
+        >
+          <Menu style={{ width: '18px', height: '18px' }} />
+        </button>
+
+        {/* Desktop Sidebar Collapse Toggle */}
+        <button
+          type="button"
+          onClick={onToggleSidebar}
+          className="header-icon-btn desktop-sidebar-toggle"
+          aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {isSidebarCollapsed ? (
+            <PanelLeftOpen style={{ width: '17px', height: '17px' }} />
+          ) : (
+            <PanelLeftClose style={{ width: '17px', height: '17px' }} />
+          )}
+        </button>
+
+        {/* UX4G Breadcrumbs Navigation */}
+        <nav aria-label="Breadcrumb" className="breadcrumbs-container">
+          <div className="breadcrumb-item">
+            <Home style={{ width: '13px', height: '13px', color: 'var(--text-tertiary)' }} />
+            <span className="breadcrumb-root">Provenance</span>
           </div>
-
-          <span style={{
-            fontSize: '0.75rem',
-            padding: '0.25rem 0.65rem',
-            borderRadius: 'var(--radius-sm)',
-            backgroundColor: 'var(--surface-secondary)',
-            border: '1px solid var(--border-subtle)',
-            color: 'var(--text-secondary)',
-            fontFamily: 'var(--font-mono)'
-          }}>
-            target: <strong style={{ color: 'var(--text-primary)' }}>{customTargetOrg}</strong>
+          <ChevronRight className="breadcrumb-separator" style={{ width: '13px', height: '13px' }} />
+          <span className="breadcrumb-current" aria-current="page">
+            {currentTitle}
           </span>
+        </nav>
+      </div>
 
-          <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-            Run #{runId}
-          </span>
-        </div>
+      {/* Right: Telemetry Chips & Global Pipeline Actions */}
+      <div className="header-right-zone">
+        {/* Target Org Chip */}
+        <span className="header-meta-chip">
+          org: <strong style={{ color: 'var(--text-primary)' }}>{customTargetOrg}</strong>
+        </span>
 
-      {/* KPI Chips & Actions */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.45rem',
-          backgroundColor: 'var(--surface-primary)',
-          padding: '0.4rem 0.75rem',
-          borderRadius: 'var(--radius-sm)',
-          border: '1px solid var(--border-subtle)',
-          fontSize: '0.78rem'
-        }}>
+        {/* Run ID Chip */}
+        <span className="header-meta-chip" style={{ fontFamily: 'var(--font-mono)' }}>
+          Run #{runId}
+        </span>
+
+        {/* Gates KPI Pill */}
+        <div className="header-kpi-chip">
           <ShieldCheck style={{ width: '14px', height: '14px', color: 'var(--text-primary)' }} />
           <span style={{ color: 'var(--text-tertiary)' }}>Gates:</span>
           <strong style={{ color: 'var(--text-primary)' }}>
@@ -95,16 +102,8 @@ export function Header({
           </strong>
         </div>
 
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.45rem',
-          backgroundColor: 'var(--surface-primary)',
-          padding: '0.4rem 0.75rem',
-          borderRadius: 'var(--radius-sm)',
-          border: '1px solid var(--border-subtle)',
-          fontSize: '0.78rem'
-        }}>
+        {/* Cascade Budget Pill */}
+        <div className="header-kpi-chip">
           <Cpu style={{ width: '14px', height: '14px', color: 'var(--text-primary)' }} />
           <span style={{ color: 'var(--text-tertiary)' }}>Cascade:</span>
           <strong style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>
@@ -112,22 +111,23 @@ export function Header({
           </strong>
         </div>
 
+        {/* Database Reset */}
         <button
           onClick={onClearDatabase}
           disabled={Boolean(loadingAction)}
-          className="btn btn-secondary"
+          className="btn btn-secondary header-action-btn"
           title="Clear database and start fresh"
-          style={{ fontSize: '0.78rem', padding: '0.45rem 0.85rem' }}
         >
           <RotateCcw style={{ width: '13px', height: '13px' }} />
           <span>Reset DB</span>
         </button>
 
+        {/* Autonomous Pipeline CTA */}
         <button
           id="btn-golden-path"
           onClick={onRunPipeline}
           disabled={Boolean(loadingAction)}
-          className="btn btn-primary"
+          className="btn btn-primary header-action-btn"
         >
           {loadingAction ? (
             <>
@@ -137,7 +137,7 @@ export function Header({
           ) : (
             <>
               <Play style={{ width: '14px', height: '14px' }} />
-              <span>Execute Autonomous Pipeline</span>
+              <span>Execute Pipeline</span>
             </>
           )}
         </button>
@@ -158,5 +158,9 @@ Header.propTypes = {
   }).isRequired,
   loadingAction: PropTypes.string,
   onRunPipeline: PropTypes.func.isRequired,
-  onClearDatabase: PropTypes.func
+  onClearDatabase: PropTypes.func,
+  activeTab: PropTypes.string,
+  isSidebarCollapsed: PropTypes.bool,
+  onToggleSidebar: PropTypes.func,
+  onOpenMobileMenu: PropTypes.func
 };

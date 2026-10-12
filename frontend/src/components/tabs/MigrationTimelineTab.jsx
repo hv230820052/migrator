@@ -86,6 +86,7 @@ export function MigrationTimelineTab({
   onCopyText,
   accountRepos = [],
   setAccountRepos,
+  accountReposErrors = [],
   isFetchingAccountRepos = false,
   onFetchAccountRepos,
   pipelineElapsedSeconds = 0,
@@ -99,13 +100,26 @@ export function MigrationTimelineTab({
   const [editEmail, setEditEmail] = useState('');
   const [eventFilter, setEventFilter] = useState('ALL');
 
-  // Dedicated SVN credential inputs for effortless credential-only flow
+  // Dedicated SVN credential inputs
   const initialUser = customCreds && customCreds.includes(':') ? customCreds.split(':')[0] : (customCreds || '');
   const initialPass = customCreds && customCreds.includes(':') ? customCreds.split(':')[1] : '';
   const [svnUsername, setSvnUsername] = useState(initialUser);
   const [svnPassword, setSvnPassword] = useState(initialPass);
   const [svnProvider, setSvnProvider] = useState('sourceforge');
   const [customSvnServerUrl, setCustomSvnServerUrl] = useState('');
+
+  // Multi-VCS state variables
+  const [githubToken, setGithubToken] = useState('');
+  const [githubUserOrg, setGithubUserOrg] = useState('');
+  const [gitlabToken, setGitlabToken] = useState('');
+  const [gitlabServerUrl, setGitlabServerUrl] = useState('https://gitlab.com');
+  const [bitbucketWorkspace, setBitbucketWorkspace] = useState('');
+  const [bitbucketUsername, setBitbucketUsername] = useState('');
+  const [bitbucketAppPassword, setBitbucketAppPassword] = useState('');
+  const [azureOrg, setAzureOrg] = useState('');
+  const [azurePat, setAzurePat] = useState('');
+  const [localGitPath, setLocalGitPath] = useState('/app/samples/localgit');
+
   const [showManualEndpoint, setShowManualEndpoint] = useState(false);
   const [hasFetchedRepos, setHasFetchedRepos] = useState(false);
 
@@ -322,20 +336,115 @@ export function MigrationTimelineTab({
 
   const handleFetchAccountReposClick = async () => {
     setHasFetchedRepos(true);
-    if (onFetchAccountRepos) {
-      const u = svnUsername || (customCreds.includes(':') ? customCreds.split(':')[0] : customCreds);
-      const p = svnPassword || (customCreds.includes(':') ? customCreds.split(':')[1] : '');
-      await onFetchAccountRepos(customVcsType, u, p, customCreds, svnProvider === 'custom' ? customSvnServerUrl : '');
+    if (!onFetchAccountRepos) return;
+
+    if (customVcsType === 'svn') {
+      const u = svnUsername;
+      const p = svnPassword;
+      const srv = svnProvider === 'custom' ? customSvnServerUrl : '';
+      await onFetchAccountRepos('svn', u, p, `${u}:${p}`, srv, '');
+    } else if (customVcsType === 'github') {
+      await onFetchAccountRepos('github', githubUserOrg, '', githubToken, '', githubUserOrg);
+    } else if (customVcsType === 'gitlab') {
+      await onFetchAccountRepos('gitlab', '', '', gitlabToken, gitlabServerUrl || 'https://gitlab.com', '');
+    } else if (customVcsType === 'bitbucket') {
+      await onFetchAccountRepos('bitbucket', bitbucketUsername, bitbucketAppPassword, bitbucketAppPassword, '', bitbucketWorkspace);
+    } else if (customVcsType === 'azure_devops') {
+      await onFetchAccountRepos('azure_devops', azureOrg, '', azurePat, '', azureOrg);
+    } else if (customVcsType === 'localgit') {
+      await onFetchAccountRepos('localgit', '', '', '', localGitPath, '');
+    } else if (customVcsType === 'tfs') {
+      await onFetchAccountRepos('tfs', '', '', '', customEndpoint || '/app/samples/tfs/tfs-sample', '');
     }
   };
 
   const handleSelectAccountRepo = async (ar) => {
     setCustomEndpoint(ar.endpoint);
-    const creds = `${svnUsername}:${svnPassword}`;
+    let creds = '';
+    const vcs = ar.source_type || customVcsType;
+
+    if (vcs === 'svn') {
+      creds = svnUsername && svnPassword ? `${svnUsername}:${svnPassword}` : (svnUsername || '');
+    } else if (vcs === 'github') {
+      creds = githubToken;
+    } else if (vcs === 'gitlab') {
+      creds = gitlabToken;
+    } else if (vcs === 'bitbucket') {
+      creds = bitbucketUsername && bitbucketAppPassword ? `${bitbucketUsername}:${bitbucketAppPassword}` : (bitbucketAppPassword || '');
+    } else if (vcs === 'azure_devops') {
+      creds = azurePat;
+    }
+
     setCustomCreds(creds);
     if (onConnectAndDiscover) {
-      await onConnectAndDiscover(ar.source_type || customVcsType, ar.endpoint, creds, customTargetOrg);
+      await onConnectAndDiscover(vcs, ar.endpoint, creds, customTargetOrg);
     }
+  };
+
+  const getAccountIdentifier = () => {
+    switch (customVcsType) {
+      case 'github': return githubUserOrg || (githubToken ? 'Authenticated GitHub Account' : 'GitHub Account');
+      case 'gitlab': return gitlabToken ? 'GitLab Workspace' : 'GitLab';
+      case 'bitbucket': return bitbucketWorkspace || bitbucketUsername || 'Bitbucket Workspace';
+      case 'azure_devops': return azureOrg || 'Azure DevOps Org';
+      case 'localgit': return localGitPath || 'Local Directory';
+      default: return svnUsername || (customCreds ? customCreds.split(':')[0] : 'SVN Account');
+    }
+  };
+
+  const isFetchDisabled = isFetchingAccountRepos || (() => {
+    if (customVcsType === 'svn') {
+      return svnProvider === 'custom' ? !customSvnServerUrl.trim() : !svnUsername.trim();
+    }
+    if (customVcsType === 'github') {
+      return !githubToken.trim() && !githubUserOrg.trim();
+    }
+    if (customVcsType === 'gitlab') {
+      return !gitlabToken.trim();
+    }
+    if (customVcsType === 'bitbucket') {
+      return !bitbucketWorkspace.trim();
+    }
+    if (customVcsType === 'azure_devops') {
+      return !azureOrg.trim() || !azurePat.trim();
+    }
+    if (customVcsType === 'localgit') {
+      return !localGitPath.trim();
+    }
+    return false;
+  })();
+
+  const getFetchButtonLabel = () => {
+    if (isFetchingAccountRepos) return 'Discovering Repositories...';
+    switch (customVcsType) {
+      case 'github': return '🔍 Discover GitHub Repositories';
+      case 'gitlab': return '🔍 Discover GitLab Projects';
+      case 'bitbucket': return '🔍 Discover Bitbucket Repositories';
+      case 'azure_devops': return '🔍 Discover Azure DevOps Repositories';
+      case 'localgit': return '🔍 Scan Local Git Repositories';
+      case 'tfs': return '🔍 Scan TFS Repositories';
+      default: return '🔍 Fetch SVN Repositories in My Account';
+    }
+  };
+
+  const getProviderBadgeStyle = (provider, sourceType) => {
+    const p = (provider || sourceType || '').toLowerCase();
+    if (p.includes('github')) {
+      return { background: '#6e40c9', color: '#ffffff', border: '1px solid #8957e5' };
+    }
+    if (p.includes('gitlab')) {
+      return { background: '#e24329', color: '#ffffff', border: '1px solid #fc6d26' };
+    }
+    if (p.includes('bitbucket')) {
+      return { background: '#0052cc', color: '#ffffff', border: '1px solid #2684ff' };
+    }
+    if (p.includes('azure')) {
+      return { background: '#0078d4', color: '#ffffff', border: '1px solid #2899f5' };
+    }
+    if (p.includes('local')) {
+      return { background: '#059669', color: '#ffffff', border: '1px solid #10b981' };
+    }
+    return { background: '#d97706', color: '#ffffff', border: '1px solid #f59e0b' };
   };
 
   const formatStopwatch = (seconds) => {
@@ -669,15 +778,17 @@ export function MigrationTimelineTab({
               }}
             >
               <option value="svn">Subversion (SVN Account Discovery)</option>
-              <option value="github">GitHub (Cloud Organization or User)</option>
-              <option value="gitlab">GitLab (Cloud or Self-Hosted Projects)</option>
-              <option value="bitbucket">Bitbucket (Repositories in Workspace)</option>
+              <option value="github">GitHub (Cloud / Organization / User)</option>
+              <option value="gitlab">GitLab (Cloud / Self-Hosted)</option>
+              <option value="bitbucket">Bitbucket (Workspace / Cloud)</option>
+              <option value="azure_devops">Azure DevOps (Repos)</option>
               <option value="localgit">Local Git (Filesystem Directory)</option>
               <option value="tfs">Team Foundation Server (TFVC Changeset)</option>
             </select>
           </div>
 
-          {customVcsType === 'svn' ? (
+          {/* SVN Specific Credential Fields */}
+          {customVcsType === 'svn' && (
             <>
               <div>
                 <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
@@ -788,17 +899,154 @@ export function MigrationTimelineTab({
                 </div>
               )}
             </>
-          ) : (
+          )}
+
+          {/* GitHub Specific Credential Fields */}
+          {customVcsType === 'github' && (
             <>
-              <div style={{ gridColumn: 'span 2' }}>
+              <div>
                 <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
-                  Account / Organization / Path
+                  Personal Access Token (PAT)
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showCreds ? 'text' : 'password'}
+                    value={githubToken}
+                    onChange={(e) => setGithubToken(e.target.value)}
+                    placeholder="ghp_xxxxxxxxxxxx (needs 'repo' scope)"
+                    style={{
+                      width: '100%',
+                      padding: '0.6rem 2.5rem 0.6rem 0.85rem',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid var(--border-subtle)',
+                      background: 'var(--surface-primary)',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.83rem',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCreds(!showCreds)}
+                    style={{
+                      position: 'absolute',
+                      right: '0.6rem',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--text-tertiary)'
+                    }}
+                  >
+                    {showCreds ? <EyeOff style={{ width: '15px', height: '15px' }} /> : <Eye style={{ width: '15px', height: '15px' }} />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  Target User or Organization (Optional)
                 </label>
                 <input
                   type="text"
-                  value={customEndpoint}
-                  onChange={(e) => setCustomEndpoint(e.target.value)}
-                  placeholder="e.g. octocat or /app/samples/localgit"
+                  value={githubUserOrg}
+                  onChange={(e) => setGithubUserOrg(e.target.value)}
+                  placeholder="e.g. octocat or my-org (leave blank for own repos)"
+                  style={{
+                    width: '100%',
+                    padding: '0.6rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--surface-primary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.83rem',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+              </div>
+            </>
+          )}
+
+          {/* GitLab Specific Credential Fields */}
+          {customVcsType === 'gitlab' && (
+            <>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  GitLab Personal Access Token (PAT)
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showCreds ? 'text' : 'password'}
+                    value={gitlabToken}
+                    onChange={(e) => setGitlabToken(e.target.value)}
+                    placeholder="glpat-xxxxxxxxxxxx (needs 'read_api')"
+                    style={{
+                      width: '100%',
+                      padding: '0.6rem 2.5rem 0.6rem 0.85rem',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid var(--border-subtle)',
+                      background: 'var(--surface-primary)',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.83rem',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCreds(!showCreds)}
+                    style={{
+                      position: 'absolute',
+                      right: '0.6rem',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--text-tertiary)'
+                    }}
+                  >
+                    {showCreds ? <EyeOff style={{ width: '15px', height: '15px' }} /> : <Eye style={{ width: '15px', height: '15px' }} />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  GitLab Host / Server URL
+                </label>
+                <input
+                  type="text"
+                  value={gitlabServerUrl}
+                  onChange={(e) => setGitlabServerUrl(e.target.value)}
+                  placeholder="https://gitlab.com or https://gitlab.mycorp.com"
+                  style={{
+                    width: '100%',
+                    padding: '0.6rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--surface-primary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.83rem',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+              </div>
+            </>
+          )}
+
+          {/* Bitbucket Specific Credential Fields */}
+          {customVcsType === 'bitbucket' && (
+            <>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  Bitbucket Workspace Name
+                </label>
+                <input
+                  type="text"
+                  value={bitbucketWorkspace}
+                  onChange={(e) => setBitbucketWorkspace(e.target.value)}
+                  placeholder="e.g. acme-workspace or username"
                   style={{
                     width: '100%',
                     padding: '0.6rem 0.85rem',
@@ -814,14 +1062,36 @@ export function MigrationTimelineTab({
 
               <div>
                 <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
-                  Personal Access Token / Password
+                  Bitbucket Username
+                </label>
+                <input
+                  type="text"
+                  value={bitbucketUsername}
+                  onChange={(e) => setBitbucketUsername(e.target.value)}
+                  placeholder="Your Bitbucket username"
+                  style={{
+                    width: '100%',
+                    padding: '0.6rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--surface-primary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.83rem',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  Bitbucket App Password
                 </label>
                 <div style={{ position: 'relative' }}>
                   <input
                     type={showCreds ? 'text' : 'password'}
-                    value={customCreds}
-                    onChange={(e) => setCustomCreds(e.target.value)}
-                    placeholder="ghp_pat or glpat-..."
+                    value={bitbucketAppPassword}
+                    onChange={(e) => setBitbucketAppPassword(e.target.value)}
+                    placeholder="App password with 'Repositories: Read'"
                     style={{
                       width: '100%',
                       padding: '0.6rem 2.5rem 0.6rem 0.85rem',
@@ -854,9 +1124,127 @@ export function MigrationTimelineTab({
             </>
           )}
 
+          {/* Azure DevOps Specific Credential Fields */}
+          {customVcsType === 'azure_devops' && (
+            <>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  Azure DevOps Organization
+                </label>
+                <input
+                  type="text"
+                  value={azureOrg}
+                  onChange={(e) => setAzureOrg(e.target.value)}
+                  placeholder="e.g. contoso (from dev.azure.com/contoso)"
+                  style={{
+                    width: '100%',
+                    padding: '0.6rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--surface-primary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.83rem',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  Personal Access Token (PAT)
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showCreds ? 'text' : 'password'}
+                    value={azurePat}
+                    onChange={(e) => setAzurePat(e.target.value)}
+                    placeholder="PAT with 'Code: Read' scope"
+                    style={{
+                      width: '100%',
+                      padding: '0.6rem 2.5rem 0.6rem 0.85rem',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid var(--border-subtle)',
+                      background: 'var(--surface-primary)',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.83rem',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCreds(!showCreds)}
+                    style={{
+                      position: 'absolute',
+                      right: '0.6rem',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--text-tertiary)'
+                    }}
+                  >
+                    {showCreds ? <EyeOff style={{ width: '15px', height: '15px' }} /> : <Eye style={{ width: '15px', height: '15px' }} />}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Local Git Specific Credential Fields */}
+          {customVcsType === 'localgit' && (
+            <div style={{ gridColumn: 'span 2' }}>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                Filesystem Directory Path
+              </label>
+              <input
+                type="text"
+                value={localGitPath}
+                onChange={(e) => setLocalGitPath(e.target.value)}
+                placeholder="e.g. /app/samples/localgit or C:\projects\my-repo"
+                style={{
+                  width: '100%',
+                  padding: '0.6rem 0.85rem',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--border-subtle)',
+                  background: 'var(--surface-primary)',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.83rem',
+                  color: 'var(--text-primary)'
+                }}
+              />
+            </div>
+          )}
+
+          {/* TFS Specific Credential Fields */}
+          {customVcsType === 'tfs' && (
+            <div style={{ gridColumn: 'span 2' }}>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                TFS Workspace / Sample Path
+              </label>
+              <input
+                type="text"
+                value={customEndpoint}
+                onChange={(e) => setCustomEndpoint(e.target.value)}
+                placeholder="/app/samples/tfs/tfs-sample"
+                style={{
+                  width: '100%',
+                  padding: '0.6rem 0.85rem',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--border-subtle)',
+                  background: 'var(--surface-primary)',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.83rem',
+                  color: 'var(--text-primary)'
+                }}
+              />
+            </div>
+          )}
+
+          {/* Target GitHub Organization (Destination) */}
           <div>
             <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
-              Target GitHub Organization
+              Target GitHub Organization (Destination)
             </label>
             <input
               type="text"
@@ -887,7 +1275,7 @@ export function MigrationTimelineTab({
               type="text"
               value={customEndpoint}
               onChange={(e) => setCustomEndpoint(e.target.value)}
-              placeholder="e.g. https://svn.code.sf.net/p/demo-svn-repo/svn"
+              placeholder="e.g. https://github.com/owner/repo.git or https://gitlab.com/owner/repo.git"
               style={{
                 width: '100%',
                 padding: '0.6rem 0.85rem',
@@ -907,7 +1295,7 @@ export function MigrationTimelineTab({
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
             <button
               onClick={handleFetchAccountReposClick}
-              disabled={isFetchingAccountRepos || (customVcsType === 'svn' && !svnUsername)}
+              disabled={isFetchDisabled}
               className="btn btn-primary"
               style={{ padding: '0.65rem 1.4rem' }}
             >
@@ -916,7 +1304,7 @@ export function MigrationTimelineTab({
               ) : (
                 <Search style={{ width: '15px', height: '15px' }} />
               )}
-              <span>{isFetchingAccountRepos ? 'Discovering Account Repositories...' : '🔍 Fetch Repositories in My Account'}</span>
+              <span>{getFetchButtonLabel()}</span>
             </button>
 
             <button
@@ -931,7 +1319,7 @@ export function MigrationTimelineTab({
                 textDecoration: 'underline'
               }}
             >
-              {showManualEndpoint ? '▲ Hide manual direct URL input' : '▼ Or enter manual repository URL'}
+              {showManualEndpoint ? '▲ Hide manual direct URL input' : '▼ Or enter manual repository URL directly'}
             </button>
           </div>
 
@@ -952,7 +1340,33 @@ export function MigrationTimelineTab({
           )}
         </div>
 
-        {/* Discovered Account Repositories Cards Showcase */}
+        {/* Discovery Errors / Feedback Notice */}
+        {accountReposErrors && accountReposErrors.length > 0 && (
+          <div style={{
+            marginTop: '1.25rem',
+            padding: '1rem 1.25rem',
+            background: 'rgba(239, 68, 68, 0.08)',
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '0.75rem'
+          }}>
+            <AlertCircle style={{ width: '18px', height: '18px', color: '#ef4444', flexShrink: 0, marginTop: '2px' }} />
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '0.86rem', color: '#ef4444', marginBottom: '0.25rem' }}>
+                Account Discovery Notice
+              </div>
+              {accountReposErrors.map((err, i) => (
+                <div key={i} style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                  • {err}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* While Fetching Repos Telemetry */}
         {isFetchingAccountRepos && (
           <div style={{ marginTop: '1.25rem', padding: '1.25rem', background: 'var(--surface-secondary)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <RotateCw className="animate-spin" style={{ width: '20px', height: '20px', color: 'var(--brand-primary)' }} />
@@ -961,80 +1375,134 @@ export function MigrationTimelineTab({
                 Querying {customVcsType.toUpperCase()} Account for Repositories...
               </div>
               <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                Contacting account API for user &quot;{svnUsername || customCreds}&quot;, inspecting project tools, and indexing repository mount points.
+                Connecting to {customVcsType.toUpperCase()} API for &quot;{getAccountIdentifier()}&quot;, validating access scope, and indexing repository mount points.
               </div>
             </div>
           </div>
         )}
 
+        {/* Discovered Account Repositories Cards Showcase */}
         {accountRepos && accountRepos.length > 0 && (
           <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border-subtle)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <FolderGit2 style={{ width: '18px', height: '18px', color: 'var(--brand-primary)' }} />
                 <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
-                  Discovered Repositories in Account &quot;{svnUsername || customCreds}&quot; ({accountRepos.length})
+                  Discovered Repositories in &quot;{getAccountIdentifier()}&quot; ({accountRepos.length})
                 </span>
               </div>
               <span className="badge badge-connected" style={{ fontSize: '0.72rem' }}>
-                1-CLICK MIGRATION TARGETING
+                1-CLICK TARGETING & MIGRATION
               </span>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))', gap: '1rem' }}>
-              {accountRepos.map((ar, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    padding: '1.1rem',
-                    borderRadius: 'var(--radius-md)',
-                    border: customEndpoint === ar.endpoint ? '2px solid var(--brand-primary)' : '1px solid var(--border-subtle)',
-                    background: customEndpoint === ar.endpoint ? 'var(--surface-secondary)' : 'var(--surface-primary)',
-                    boxShadow: customEndpoint === ar.endpoint ? '0 0 0 1px var(--brand-primary)' : 'none',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    justifyContent: 'space-between',
-                    transition: 'all 0.15s ease'
-                  }}
-                >
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.4rem' }}>
-                      <div style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
-                        {ar.display_name || ar.name}
-                      </div>
-                      <span className="badge badge-t0" style={{ fontSize: '0.65rem' }}>
-                        {ar.provider || 'SVN'}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-                      {ar.description || 'Subversion repository mount'}
-                    </div>
-                    <div style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', background: 'var(--canvas-bg)', padding: '0.35rem 0.5rem', borderRadius: '4px', wordBreak: 'break-all', marginBottom: '0.85rem' }}>
-                      {ar.endpoint}
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => handleSelectAccountRepo(ar)}
-                    className="btn btn-primary"
-                    style={{ width: '100%', padding: '0.55rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
+              {accountRepos.map((ar, idx) => {
+                const isSelected = customEndpoint === ar.endpoint;
+                const badgeStyle = getProviderBadgeStyle(ar.provider, ar.source_type);
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      padding: '1.2rem',
+                      borderRadius: 'var(--radius-md)',
+                      border: isSelected ? '2px solid var(--brand-primary)' : '1px solid var(--border-subtle)',
+                      background: isSelected ? 'var(--surface-secondary)' : 'var(--surface-primary)',
+                      boxShadow: isSelected ? '0 0 0 1px var(--brand-primary)' : 'none',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      justifyContent: 'space-between',
+                      transition: 'all 0.15s ease'
+                    }}
                   >
-                    <Play style={{ width: '13px', height: '13px' }} />
-                    <span>Select &amp; Migrate This Repository</span>
-                  </button>
-                </div>
-              ))}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.45rem', gap: '0.5rem' }}>
+                        <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)', wordBreak: 'break-word' }}>
+                          {ar.display_name || ar.name}
+                        </div>
+                        <span style={{
+                          fontSize: '0.66rem',
+                          fontWeight: 700,
+                          padding: '0.2rem 0.55rem',
+                          borderRadius: '10px',
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.03em',
+                          flexShrink: 0,
+                          ...badgeStyle
+                        }}>
+                          {ar.provider || ar.source_type?.toUpperCase() || 'VCS'}
+                        </span>
+                      </div>
+
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.65rem', minHeight: '1.8rem', lineHeight: 1.4 }}>
+                        {ar.description || `${ar.provider || 'VCS'} repository ready for migration`}
+                      </div>
+
+                      {/* Rich Metadata Pills */}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.75rem', fontSize: '0.72rem' }}>
+                        {ar.visibility && (
+                          <span style={{ background: 'var(--canvas-bg)', padding: '0.15rem 0.45rem', borderRadius: '4px', color: 'var(--text-tertiary)', border: '1px solid var(--border-subtle)' }}>
+                            {ar.visibility === 'private' ? '🔒 Private' : '🌐 Public'}
+                          </span>
+                        )}
+                        {ar.language && (
+                          <span style={{ background: 'var(--canvas-bg)', padding: '0.15rem 0.45rem', borderRadius: '4px', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)', fontWeight: 600 }}>
+                            🔤 {ar.language}
+                          </span>
+                        )}
+                        {ar.default_branch && (
+                          <span style={{ background: 'var(--canvas-bg)', padding: '0.15rem 0.45rem', borderRadius: '4px', color: 'var(--text-tertiary)', border: '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)' }}>
+                            🌿 {ar.default_branch}
+                          </span>
+                        )}
+                        {ar.stars !== undefined && ar.stars > 0 && (
+                          <span style={{ background: 'var(--canvas-bg)', padding: '0.15rem 0.45rem', borderRadius: '4px', color: 'var(--text-tertiary)', border: '1px solid var(--border-subtle)' }}>
+                            ⭐ {ar.stars}
+                          </span>
+                        )}
+                        {ar.forks !== undefined && ar.forks > 0 && (
+                          <span style={{ background: 'var(--canvas-bg)', padding: '0.15rem 0.45rem', borderRadius: '4px', color: 'var(--text-tertiary)', border: '1px solid var(--border-subtle)' }}>
+                            🍴 {ar.forks}
+                          </span>
+                        )}
+                      </div>
+
+                      <div style={{ fontSize: '0.71rem', fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', background: 'var(--canvas-bg)', padding: '0.35rem 0.5rem', borderRadius: '4px', wordBreak: 'break-all', marginBottom: '0.9rem' }}>
+                        {ar.endpoint}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSelectAccountRepo(ar)}
+                      className={isSelected ? "btn btn-secondary" : "btn btn-primary"}
+                      style={{ width: '100%', padding: '0.55rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+                    >
+                      {isSelected ? (
+                        <>
+                          <CheckCircle2 style={{ width: '14px', height: '14px', color: 'var(--status-success)' }} />
+                          <span>✓ Active Migration Target</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play style={{ width: '13px', height: '13px' }} />
+                          <span>Select &amp; Target This Repository</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
 
         {hasFetchedRepos && !isFetchingAccountRepos && (!accountRepos || accountRepos.length === 0) && (
-          <div style={{ marginTop: '1.25rem', padding: '1rem', background: 'var(--canvas-bg)', borderRadius: 'var(--radius-sm)', border: '1px dashed var(--border-subtle)', textAlign: 'center' }}>
-            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
-              No repositories found for account &quot;{svnUsername || customCreds}&quot;.
+          <div style={{ marginTop: '1.25rem', padding: '1.25rem', background: 'var(--canvas-bg)', borderRadius: 'var(--radius-sm)', border: '1px dashed var(--border-subtle)', textAlign: 'center' }}>
+            <div style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+              No repositories found for &quot;{getAccountIdentifier()}&quot;.
             </div>
-            <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '0.25rem' }}>
-              Verify your username/password credentials or enter a direct repository URL manually.
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '0.35rem' }}>
+              Ensure your credentials/tokens are valid and have sufficient read scopes, or enter a direct clone URL manually.
             </div>
           </div>
         )}
@@ -2189,7 +2657,10 @@ MigrationTimelineTab.propTypes = {
   onApproveGate: PropTypes.func.isRequired,
   onDownloadCertificate: PropTypes.func.isRequired,
   copyFeedback: PropTypes.bool,
-  onCopyText: PropTypes.func.isRequired,
+  accountRepos: PropTypes.array,
+  accountReposErrors: PropTypes.array,
+  isFetchingAccountRepos: PropTypes.bool,
+  onFetchAccountRepos: PropTypes.func,
   ticketsData: PropTypes.object,
   API_BASE: PropTypes.string.isRequired
 };

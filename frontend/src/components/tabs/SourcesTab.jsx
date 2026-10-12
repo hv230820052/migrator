@@ -32,82 +32,76 @@ export function SourcesTab({
           Connect any legacy Subversion, Local Git, GitHub, or TFS repository. Agents will dynamically inspect revision logs, map authors, triage secrets, and verify migration parity.
         </p>
 
-        {/* Quick Presets */}
+        {/* Quick VCS Switcher Chips */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
           <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            PRESETS:
+            SELECT VCS:
           </span>
           <button
             type="button"
             onClick={() => {
               setCustomVcsType('svn');
-              setCustomEndpoint('https://svn.code.sf.net/p/demo-svn-repo/svn');
-              setCustomCreds('');
+              setCustomEndpoint('');
             }}
-            className="btn-chip"
+            className={`btn-chip ${customVcsType === 'svn' ? 'active' : ''}`}
           >
             <Server style={{ width: '12px', height: '12px' }} />
-            <span>Remote SVN (SourceForge)</span>
+            <span>Subversion (SVN)</span>
           </button>
           <button
             type="button"
             onClick={() => {
-              setCustomVcsType('svn');
-              setCustomEndpoint('/app/data/messy-svn-repo');
-              setCustomCreds('');
+              setCustomVcsType('github');
+              setCustomEndpoint('');
             }}
-            className="btn-chip"
+            className={`btn-chip ${customVcsType === 'github' ? 'active' : ''}`}
           >
-            <FolderGit2 style={{ width: '12px', height: '12px' }} />
-            <span>Local SVN Mirror</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setCustomVcsType('localgit');
-              setCustomEndpoint('/app/samples/localgit/dirty-local');
-              setCustomCreds('');
-            }}
-            className="btn-chip"
-          >
-            <FolderGit2 style={{ width: '12px', height: '12px' }} />
-            <span>Local Git Mirror</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setCustomVcsType('tfs');
-              setCustomEndpoint('/app/samples/tfs/tfs-sample');
-              setCustomCreds('');
-            }}
-            className="btn-chip"
-          >
-            <Server style={{ width: '12px', height: '12px' }} />
-            <span>TFS Workspace (Simulated)</span>
+            <Globe style={{ width: '12px', height: '12px' }} />
+            <span>GitHub</span>
           </button>
           <button
             type="button"
             onClick={() => {
               setCustomVcsType('gitlab');
-              setCustomEndpoint('https://gitlab.com/gitlab-org/gitlab-foss.git');
-              setCustomCreds('');
+              setCustomEndpoint('');
             }}
-            className="btn-chip"
+            className={`btn-chip ${customVcsType === 'gitlab' ? 'active' : ''}`}
           >
             <Globe style={{ width: '12px', height: '12px' }} />
-            <span>GitLab Remote</span>
+            <span>GitLab</span>
           </button>
           <button
             type="button"
             onClick={() => {
               setCustomVcsType('bitbucket');
-              setCustomEndpoint('https://bitbucket.org/atlassian/maven-jgitflow.git');
-              setCustomCreds('');
+              setCustomEndpoint('');
             }}
-            className="btn-chip"
+            className={`btn-chip ${customVcsType === 'bitbucket' ? 'active' : ''}`}
           >
             <Globe style={{ width: '12px', height: '12px' }} />
-            <span>Bitbucket Remote</span>
+            <span>Bitbucket</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCustomVcsType('azure_devops');
+              setCustomEndpoint('');
+            }}
+            className={`btn-chip ${customVcsType === 'azure_devops' ? 'active' : ''}`}
+          >
+            <Server style={{ width: '12px', height: '12px' }} />
+            <span>Azure DevOps</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCustomVcsType('localgit');
+              setCustomEndpoint('');
+            }}
+            className={`btn-chip ${customVcsType === 'localgit' ? 'active' : ''}`}
+          >
+            <FolderGit2 style={{ width: '12px', height: '12px' }} />
+            <span>Local Git</span>
           </button>
         </div>
 
@@ -120,12 +114,13 @@ export function SourcesTab({
               onChange={(e) => setCustomVcsType(e.target.value)}
               className="form-select"
             >
-              <option value="svn">Subversion (SVN - Non-Git Centralized)</option>
-              <option value="tfs">Team Foundation Server (TFS / TFVC)</option>
-              <option value="localgit">Local Git Mirror / Bare Repo</option>
-              <option value="github">GitHub Organization</option>
+              <option value="svn">Subversion (SVN - Centralized)</option>
+              <option value="github">GitHub (Cloud / Enterprise)</option>
               <option value="gitlab">GitLab (Cloud / Self-Hosted)</option>
               <option value="bitbucket">Bitbucket (Cloud / Data Center)</option>
+              <option value="azure_devops">Azure DevOps (Repos)</option>
+              <option value="localgit">Local Git Filesystem Directory</option>
+              <option value="tfs">Team Foundation Server (TFS / TFVC)</option>
             </select>
           </div>
 
