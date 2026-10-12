@@ -1237,24 +1237,6 @@ async def get_contributors_verification(id: int, db: Session = Depends(get_db)):
     pre_push = list(cached.get("pre_push_authors") or [])
     gh_contribs = list(cached.get("github_contributors") or [])
     
-    # If pre-push author audit not in cache, derive from repo mappings and author history
-    if not pre_push and repo:
-        disc = _discover_authors_for_repo(repo, db)
-        disc_map = {a.username: a for a in disc}
-        db_maps = db.query(Mapping).filter(Mapping.repo_id == repo.id).all()
-        for m in db_maps:
-            email = m.email or m.proposed_email or ""
-            name = m.name or m.legacy_id
-            commits = disc_map.get(m.legacy_id).commits if m.legacy_id in disc_map else 1
-            if email:
-                is_unverifiable = any(dom in email.lower() for dom in ["example.com", "localhost", "test", "local"])
-                pre_push.append({
-                    "author": f"{name} <{email}>",
-                    "commits": commits,
-                    "status": "Linked Profile Email" if not is_unverifiable else "Potential Unlinked / Generic Email",
-                    "is_linked": not is_unverifiable
-                })
-    
     # If gh_contribs is empty, query GitHub API live
     if not gh_contribs and repo:
         token = os.environ.get("GITHUB_PAT", "")
@@ -1480,9 +1462,6 @@ async def get_run_tickets(run_id: int, repo_id: Optional[int] = None, db: Sessio
     items = query.all()
     if not items and repo_id:
         items = db.query(TicketItem).filter(TicketItem.repo_id == repo_id).all()
-    if not items:
-        # Fallback to any recent items in DB
-        items = db.query(TicketItem).all()
         
     res_items = []
     for it in items:
@@ -1610,7 +1589,7 @@ async def clear_database(db: Session = Depends(get_db)):
     """POST /api/admin/clear-database - Clears all database tables for a fresh UI start"""
     logger.info("Admin: Clearing all tables in the database")
     try:
-        from app.models import Finding, Approval, Event, Mapping, Repo, Run, Source
+        from app.models import Finding, Approval, Event, Mapping, Repo, Run, Source, TicketItem
         db.query(Finding).delete()
         db.query(Approval).delete()
         db.query(Event).delete()
@@ -1618,12 +1597,14 @@ async def clear_database(db: Session = Depends(get_db)):
         db.query(Repo).delete()
         db.query(Run).delete()
         db.query(Source).delete()
+        db.query(TicketItem).delete()
         db.commit()
     except Exception as e:
         logger.error(f"Error clearing database: {e}")
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     _cached_insights.clear()
+    MIGRATION_VERIFICATION_CACHE.clear()
     return {"status": "cleared", "message": "Database completely wiped. Clean slate."}
 
 # Health check

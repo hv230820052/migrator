@@ -21,7 +21,7 @@ export function useProvenanceRun(initialRunId = 1) {
 
   // Live timeline workflow states
   const [stageStatuses, setStageStatuses] = useState({
-    scout: 'completed',
+    scout: 'pending',
     curator: 'pending',
     assessor: 'pending',
     cartographer: 'pending',
@@ -77,8 +77,18 @@ export function useProvenanceRun(initialRunId = 1) {
     queryFn: () => fetchJson(`${API_BASE}/api/catalog`),
   });
 
+  // Dynamically set scout stage to completed if repos exist in catalog
+  useEffect(() => {
+    if (catalog.length > 0) {
+      setStageStatuses(prev => ({
+        ...prev,
+        scout: 'completed'
+      }));
+    }
+  }, [catalog.length]);
+
   // Default to the latest discovered repository in catalog if no repo explicitly selected
-  const activeRepoId = selectedRepoId || (catalog.length > 0 ? catalog[catalog.length - 1].id : 1);
+  const activeRepoId = selectedRepoId || (catalog.length > 0 ? catalog[catalog.length - 1].id : null);
 
   // TanStack Query: 3. Author Mappings
   const { data: mappings = [] } = useQuery({

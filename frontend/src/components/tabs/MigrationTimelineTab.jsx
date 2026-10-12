@@ -36,49 +36,6 @@ import {
   Info
 } from 'lucide-react';
 
-const VCS_PRESETS = [
-  {
-    id: 'svn-remote',
-    name: 'Remote SVN (Live Demo)',
-    type: 'svn',
-    endpoint: 'https://svn.code.sf.net/p/demo-svn-repo/svn',
-    creds: '',
-    desc: 'Live SourceForge Subversion repository with branches & revisions'
-  },
-  {
-    id: 'local-git',
-    name: 'Local Git Sample',
-    type: 'localgit',
-    endpoint: 'localgit',
-    creds: '',
-    desc: 'Local Git repository cluster with full commit tree'
-  },
-  {
-    id: 'github-org',
-    name: 'GitHub Org',
-    type: 'github',
-    endpoint: 'octocat',
-    creds: '',
-    desc: 'Public / Private GitHub organization via REST API'
-  },
-  {
-    id: 'gitlab-remote',
-    name: 'GitLab Remote',
-    type: 'gitlab',
-    endpoint: 'https://gitlab.com/gitlab-tests/sample-project.git',
-    creds: '',
-    desc: 'Remote GitLab project via git ls-remote verification'
-  },
-  {
-    id: 'tfs-sample',
-    name: 'TFS TFVC Sample',
-    type: 'tfs',
-    endpoint: 'tfs/tfs-sample.json',
-    creds: '',
-    desc: 'TFVC changeset repository sample catalog'
-  }
-];
-
 const TIMELINE_STAGES = [
   { id: 'scout', number: 1, title: 'Scout Discovery', subtitle: 'Structure & Scopes', icon: Network },
   { id: 'curator', number: 2, title: 'Secret & Binaries', subtitle: 'NFR-09 Redaction', icon: ShieldAlert },
@@ -378,17 +335,6 @@ export function MigrationTimelineTab({
     setCustomCreds(creds);
     if (onConnectAndDiscover) {
       await onConnectAndDiscover(ar.source_type || customVcsType, ar.endpoint, creds, customTargetOrg);
-    }
-  };
-
-  const handleApplyPreset = (preset) => {
-    setCustomVcsType(preset.type);
-    setCustomEndpoint(preset.endpoint);
-    setCustomCreds(preset.creds);
-    if (preset.creds.includes(':')) {
-      const parts = preset.creds.split(':');
-      setSvnUsername(parts[0]);
-      setSvnPassword(parts[1] || '');
     }
   };
 
@@ -701,30 +647,6 @@ export function MigrationTimelineTab({
         <p className="panel-description">
           Provide your VCS endpoint and credentials below. The platform connects directly using read-only connectors, validates access scope, and indexes all available repositories dynamically.
         </p>
-
-        {/* Quick Presets Bar */}
-        <div style={{ marginBottom: '1.5rem', background: 'var(--canvas-bg)', padding: '1rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-          <div style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.65rem' }}>
-            Quick-Select Tested Presets:
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
-            {VCS_PRESETS.map((preset) => (
-              <button
-                key={preset.id}
-                type="button"
-                onClick={() => handleApplyPreset(preset)}
-                className="btn-chip"
-                style={{
-                  border: customVcsType === preset.type && customEndpoint === preset.endpoint ? '1px solid var(--brand-primary)' : '1px solid var(--border-subtle)',
-                  background: customVcsType === preset.type && customEndpoint === preset.endpoint ? 'var(--surface-secondary)' : 'var(--surface-primary)',
-                  fontWeight: customVcsType === preset.type && customEndpoint === preset.endpoint ? 600 : 500
-                }}
-              >
-                <span>{preset.name}</span>
-              </button>
-            ))}
-          </div>
-        </div>
 
         {/* Credentials & Account Discovery Form */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem', marginBottom: '1.25rem' }}>
