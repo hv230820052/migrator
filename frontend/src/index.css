@@ -1,59 +1,81 @@
 /* ==========================================================================
-   Provenance Strict Light-Theme Minimalist Design System
-   Pure white / slate-50 canvas, deep ink contrast, 1px hairlines, generous whitespace
+   UX4G Design System 3.0 Standard (Government of India / NeGD Accessible Framework)
+   WCAG 2.1 AA Compliant, Royal Indigo Primary, High Legibility, 1px Dividers
    ========================================================================== */
 
 :root {
-  /* Strict Monochromatic Light Scale */
-  --canvas-bg: #f8fafc;           /* Clean soft slate-50 background */
-  --surface-primary: #ffffff;     /* Pure white panels */
-  --surface-secondary: #f1f5f9;   /* Slate-100 subtle separation */
-  --surface-tertiary: #e2e8f0;    /* Slate-200 */
-  --surface-muted: #f8fafc;       /* Slate-50 hover */
+  /* UX4G 3.0 Official Design Tokens */
+  --ux4g-color-brand-primary: #4a2bc2;
+  --ux4g-color-brand-secondary: #ff7700;
+  --ux4g-color-brand-tertiary: #008800;
+  --ux4g-color-text-primary: #171717;
+  --ux4g-color-text-secondary: #525252;
+  --ux4g-color-text-tertiary: #737373;
+  --ux4g-color-text-disabled: #a3a3a3;
+  --ux4g-color-text-inverse: #ffffff;
+  --ux4g-color-text-link: #4a2bc2;
+  --ux4g-color-text-link-hover: #3d239f;
+  --ux4g-color-background-primary: #ffffff;
+  --ux4g-color-background-secondary: #fafafa;
+  --ux4g-color-background-tertiary: #f5f5f5;
+  --ux4g-color-border-default: #e5e5e5;
+  --ux4g-color-border-hover: #a3a3a3;
+  --ux4g-color-border-focus: #4a2bc2;
+  --ux4g-color-interactive-default: #4a2bc2;
+  --ux4g-color-interactive-hover: #3d239f;
+  --ux4g-color-interactive-active: #301c7d;
+  --ux4g-color-interactive-disabled: #a3a3a3;
+  --ux4g-color-feedback-success: #008800;
+  --ux4g-color-feedback-warning: #cc5f00;
+  --ux4g-color-feedback-error: #dc2626;
+  --ux4g-color-feedback-info: #4a2bc2;
 
-  /* Ultra-thin Hairline Borders (Borders Over Shadows) */
-  --border-subtle: #e2e8f0;       /* 1px hairline slate-200 */
-  --border-strong: #cbd5e1;       /* Slate-300 */
-  --border-interactive: #94a3b8;  /* Slate-400 */
-  --border-focus: #0f172a;        /* Deep ink focus ring */
+  /* App Surface & Palette mapped to UX4G */
+  --canvas-bg: #f8fafc;
+  --surface-primary: #ffffff;
+  --surface-secondary: #f8f9fa;
+  --surface-tertiary: #f1f3f5;
+  --surface-muted: #f8fafc;
 
-  /* Deep High-Legibility Ink Typography */
-  --text-primary: #0f172a;        /* Deep charcoal / ink slate-900 */
-  --text-secondary: #334155;      /* Slate-700 high legibility */
-  --text-tertiary: #64748b;       /* Slate-500 crisp secondary */
-  --text-disabled: #94a3b8;       /* Slate-400 */
+  --border-subtle: #e5e5e5;
+  --border-strong: #d4d4d4;
+  --border-interactive: #a3a3a3;
+  --border-focus: #4a2bc2;
 
-  /* Exactly ONE Solid Restrained Accent: Deep Ink Charcoal */
-  --brand-primary: #0f172a;       /* Pure ink slate-900 */
-  --brand-hover: #1e293b;         /* Slate-800 */
-  --brand-active: #334155;        /* Slate-700 */
-  --brand-ring: rgba(15, 23, 42, 0.12);
+  --text-primary: #171717;
+  --text-secondary: #525252;
+  --text-tertiary: #737373;
+  --text-disabled: #a3a3a3;
 
-  /* High-Contrast Crisp Status Tokens */
-  --status-success: #047857;       /* Emerald-700 deep contrast */
-  --status-success-bg: #ecfdf5;    /* Emerald-50 */
-  --status-success-border: #a7f3d0;/* Emerald-200 */
+  --brand-primary: #4a2bc2;
+  --brand-hover: #3d239f;
+  --brand-active: #301c7d;
+  --brand-ring: rgba(74, 43, 194, 0.18);
+  --brand-saffron: #ff7700;
+  --brand-green: #008800;
 
-  --status-warning: #b45309;       /* Amber-700 */
-  --status-warning-bg: #fffbeb;    /* Amber-50 */
-  --status-warning-border: #fde68a;/* Amber-200 */
+  --status-success: #008800;
+  --status-success-bg: #f0fdf4;
+  --status-success-border: #bbf7d0;
 
-  --status-danger: #be123c;        /* Rose-700 */
-  --status-danger-bg: #fff1f2;     /* Rose-50 */
-  --status-danger-border: #fecdd3; /* Rose-200 */
+  --status-warning: #cc5f00;
+  --status-warning-bg: #fffbeb;
+  --status-warning-border: #fde68a;
 
-  --status-info: #0369a1;          /* Sky-700 */
-  --status-info-bg: #f0f9ff;       /* Sky-50 */
-  --status-info-border: #bae6fd;   /* Sky-200 */
+  --status-danger: #dc2626;
+  --status-danger-bg: #fff1f2;
+  --status-danger-border: #fecdd3;
 
-  /* Geometric Sans & Engineering Monospace */
+  --status-info: #4a2bc2;
+  --status-info-bg: #f5f3ff;
+  --status-info-border: #ddd6fe;
+
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', Menlo, monospace;
 
-  /* Tight Border Radii */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 10px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
 }
 
 *, *::before, *::after {
@@ -181,9 +203,9 @@ body {
 }
 
 .tab-btn.active {
-  color: var(--text-primary);
-  border-bottom-color: var(--text-primary);
-  font-weight: 600;
+  color: var(--brand-primary);
+  border-bottom-color: var(--brand-primary);
+  font-weight: 700;
 }
 
 .tab-btn:focus-visible {
@@ -191,7 +213,53 @@ body {
   outline-offset: -2px;
 }
 
-/* Buttons: Strict Solid Black or Subtle Hairline */
+/* UX4G Top National Accessibility & Government Banner */
+.ux4g-gov-banner {
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #e5e5e5;
+  padding: 0.35rem 2.25rem;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.ux4g-gov-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ux4g-access-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.ux4g-font-btn {
+  background: #ffffff;
+  border: 1px solid #d4d4d4;
+  border-radius: 3px;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.ux4g-font-btn:hover {
+  background: #ffffff;
+  color: var(--brand-primary);
+  border-color: var(--brand-primary);
+}
+
+/* UX4G Button Styles */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -205,7 +273,7 @@ body {
   cursor: pointer;
   border: 1px solid transparent;
   box-shadow: none;
-  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
   white-space: nowrap;
 }
 
@@ -214,15 +282,17 @@ body {
   cursor: not-allowed;
 }
 
-/* Solid Restrained Accent Button */
+/* UX4G Primary Button in Royal Indigo */
 .btn-primary {
   background-color: var(--brand-primary);
   color: #ffffff;
   border-color: var(--brand-primary);
+  box-shadow: 0 1px 2px rgba(74, 43, 194, 0.2);
 }
 .btn-primary:hover:not(:disabled) {
   background-color: var(--brand-hover);
   border-color: var(--brand-hover);
+  box-shadow: 0 2px 6px rgba(74, 43, 194, 0.3);
 }
 .btn-primary:active:not(:disabled) {
   background-color: var(--brand-active);
@@ -247,8 +317,8 @@ body {
   border-color: var(--status-success);
 }
 .btn-success:hover:not(:disabled) {
-  background-color: #047857;
-  border-color: #047857;
+  background-color: #007700;
+  border-color: #007700;
 }
 
 .btn-chip {
@@ -271,7 +341,7 @@ body {
   border-color: var(--border-strong);
 }
 
-/* Badges: Crisp High-Legibility Light System */
+/* Badges: WCAG 2.1 AA Compliant */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -289,32 +359,32 @@ body {
 }
 
 .badge-t0 {
-  background-color: #f8fafc;
-  color: #0f172a;
-  border: 1px solid #cbd5e1;
+  background-color: #f1f3f5;
+  color: #495057;
+  border: 1px solid #dee2e6;
 }
 
 .badge-connected, .badge-success {
   background-color: #f0fdf4;
-  color: #166534;
+  color: #008800;
   border: 1px solid #bbf7d0;
 }
 
 .badge-t2, .badge-info {
-  background-color: #f8fafc;
-  color: #334155;
-  border: 1px solid #cbd5e1;
+  background-color: #f5f3ff;
+  color: #4a2bc2;
+  border: 1px solid #ddd6fe;
 }
 
 .badge-t3, .badge-warning {
-  background-color: #f8fafc;
-  color: #0f172a;
-  border: 1px solid #94a3b8;
+  background-color: #fffbeb;
+  color: #cc5f00;
+  border: 1px solid #fde68a;
 }
 
 .badge-danger {
   background-color: #fff1f2;
-  color: #9f1239;
+  color: #dc2626;
   border: 1px solid #fecdd3;
 }
 

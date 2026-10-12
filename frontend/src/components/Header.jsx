@@ -13,61 +13,107 @@ export function Header({
   onClearDatabase
 }) {
   return (
-    <header style={{
-      backgroundColor: 'var(--surface-primary)',
-      borderBottom: '1px solid var(--border-subtle)',
-      padding: '0.95rem 2.25rem',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      position: 'sticky',
-      top: 0,
-      zIndex: 50
-    }}>
-      {/* Brand & Connection State */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-          <div style={{
-            width: '8px',
-            height: '8px',
-            borderRadius: '50%',
-            backgroundColor: wsConnected ? '#10b981' : 'var(--text-tertiary)',
-            boxShadow: wsConnected ? '0 0 6px rgba(16, 185, 129, 0.4)' : 'none',
-            border: wsConnected ? '1px solid #059669' : '1px solid var(--border-subtle)'
-          }} />
-          <span style={{
-            fontSize: '1.05rem',
-            fontWeight: 800,
-            letterSpacing: '0.04em',
-            color: 'var(--text-primary)',
-            fontFamily: 'var(--font-mono)'
-          }}>
-            PROVENANCE
-          </span>
-          <span
-            className={`badge ${wsConnected ? 'badge-connected' : 'badge-t3'}`}
-            style={{ fontSize: '0.65rem', padding: '0.12rem 0.48rem' }}
-          >
-            {wsConnected ? 'Connected' : 'Offline'}
-          </span>
+    <>
+      {/* UX4G Standard Top National Accessibility & Government Banner */}
+      <div className="ux4g-gov-banner">
+        <div className="ux4g-gov-badge">
+          <span style={{ color: 'var(--brand-saffron)', fontWeight: 800, fontSize: '0.85rem' }}>॥</span>
+          <span>Digital Public Infrastructure | Government of India</span>
+          <span style={{ color: 'var(--text-tertiary)', margin: '0 0.35rem' }}>•</span>
+          <span style={{ color: 'var(--brand-primary)', fontWeight: 700 }}>UX4G 3.0 Standard</span>
         </div>
 
-        <span style={{
-          fontSize: '0.75rem',
-          padding: '0.25rem 0.65rem',
-          borderRadius: 'var(--radius-sm)',
-          backgroundColor: 'var(--surface-primary)',
-          border: '1px solid var(--border-subtle)',
-          color: 'var(--text-secondary)',
-          fontFamily: 'var(--font-mono)'
-        }}>
-          target: <strong style={{ color: 'var(--text-primary)' }}>{customTargetOrg}</strong>
-        </span>
-
-        <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-          Run #{runId}
-        </span>
+        <div className="ux4g-access-tools">
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>Text Resize:</span>
+          <button
+            type="button"
+            className="ux4g-font-btn"
+            title="Decrease Font Size"
+            onClick={() => { document.documentElement.style.fontSize = '92%'; }}
+          >
+            A-
+          </button>
+          <button
+            type="button"
+            className="ux4g-font-btn"
+            title="Default Font Size"
+            onClick={() => { document.documentElement.style.fontSize = '100%'; }}
+          >
+            A
+          </button>
+          <button
+            type="button"
+            className="ux4g-font-btn"
+            title="Increase Font Size"
+            onClick={() => { document.documentElement.style.fontSize = '108%'; }}
+          >
+            A+
+          </button>
+        </div>
       </div>
+
+      <header style={{
+        backgroundColor: 'var(--surface-primary)',
+        borderBottom: '1px solid var(--border-subtle)',
+        padding: '0.95rem 2.25rem',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        position: 'sticky',
+        top: 0,
+        zIndex: 50
+      }}>
+        {/* Brand & Connection State */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+            <div style={{
+              width: '10px',
+              height: '10px',
+              borderRadius: '50%',
+              backgroundColor: wsConnected ? 'var(--status-success)' : 'var(--text-tertiary)',
+              boxShadow: wsConnected ? '0 0 8px rgba(0, 136, 0, 0.4)' : 'none',
+              border: wsConnected ? '1px solid #008800' : '1px solid var(--border-subtle)'
+            }} />
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{
+                  fontSize: '1.08rem',
+                  fontWeight: 800,
+                  letterSpacing: '0.02em',
+                  color: 'var(--brand-primary)',
+                  fontFamily: 'var(--font-sans)'
+                }}>
+                  PROVENANCE MIGRATOR
+                </span>
+                <span
+                  className={`badge ${wsConnected ? 'badge-connected' : 'badge-t3'}`}
+                  style={{ fontSize: '0.62rem', padding: '0.12rem 0.48rem' }}
+                >
+                  {wsConnected ? 'Connected' : 'Offline'}
+                </span>
+              </div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>
+                Autonomous VCS to GitHub Migration Engine
+              </div>
+            </div>
+          </div>
+
+          <span style={{
+            fontSize: '0.75rem',
+            padding: '0.25rem 0.65rem',
+            borderRadius: 'var(--radius-sm)',
+            backgroundColor: 'var(--surface-secondary)',
+            border: '1px solid var(--border-subtle)',
+            color: 'var(--text-secondary)',
+            fontFamily: 'var(--font-mono)'
+          }}>
+            target: <strong style={{ color: 'var(--text-primary)' }}>{customTargetOrg}</strong>
+          </span>
+
+          <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+            Run #{runId}
+          </span>
+        </div>
 
       {/* KPI Chips & Actions */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
@@ -135,7 +181,8 @@ export function Header({
           )}
         </button>
       </div>
-    </header>
+      </header>
+    </>
   );
 }
 

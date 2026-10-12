@@ -32,9 +32,33 @@ export function NavigationTabs({ activeTab, onSelectTab }) {
             key={tab.id}
             onClick={() => onSelectTab(tab.id)}
             className={`tab-btn ${isActive ? 'active' : ''}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.55rem',
+              borderBottom: isActive ? '3px solid var(--brand-primary)' : '3px solid transparent',
+              color: isActive ? 'var(--brand-primary)' : 'var(--text-secondary)'
+            }}
           >
-            <Icon style={{ width: '15px', height: '15px' }} />
-            <span>{idx + 1}. {tab.label}</span>
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '18px',
+                height: '18px',
+                borderRadius: '50%',
+                fontSize: '0.65rem',
+                fontWeight: 700,
+                background: isActive ? 'var(--brand-primary)' : 'var(--surface-secondary)',
+                color: isActive ? '#ffffff' : 'var(--text-tertiary)',
+                border: '1px solid var(--border-subtle)'
+              }}
+            >
+              {idx + 1}
+            </span>
+            <Icon style={{ width: '15px', height: '15px', color: isActive ? 'var(--brand-primary)' : 'var(--text-tertiary)' }} />
+            <span>{tab.label}</span>
           </button>
         );
       })}
