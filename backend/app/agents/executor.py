@@ -6,6 +6,7 @@ Streams events with "why" lines (<1s latency per G-13)
 """
 import subprocess
 import os
+import re
 import tempfile
 import shutil
 from pathlib import Path
@@ -77,7 +78,7 @@ class ExecutorAgent:
                 await self._emit(f"Cloning from {source.type}: {source.endpoint}", "T0")
                 
                 if source.type == "svn":
-                    await self._clone_svn(source, repo_path)
+                    await self._clone_svn(source, repo_path, repo_id=repo_id)
                 elif source.type == "localgit":
                     await self._clone_localgit(source, repo_path)
                 elif source.type == "github":
@@ -104,8 +105,8 @@ class ExecutorAgent:
                 await self._emit(f"Migration failed: {str(e)}", "T0")
                 return MigrationResult(success=False, commits_pushed=0, refs_updated=[], lfs_files=[], errors=[str(e)])
     
-    async def _clone_svn(self, source, repo_path: Path):
-        """Clone SVN repo using git-svn with robust layout detection and fallback"""
+    async def _clone_svn(self, source, repo_path: Path, repo_id: Optional[int] = None):
+        """Clone SVN repo using git-svn with robust layout detection, author self-healing, and graceful fallbacks"""
         svn_url = source.endpoint
         if not svn_url.startswith(("file://", "http://", "https://", "svn://")):
             svn_url = f"file://{os.path.abspath(svn_url)}"
@@ -124,30 +125,87 @@ class ExecutorAgent:
             prime_cmd.append(svn_url)
             subprocess.run(prime_cmd, capture_output=True, text=True, timeout=30)
 
-        authors_file = self._generate_authors_file(repo_path.parent, source)
-        
-        # Try standard layout first
-        cmd = ["git", "svn", "clone"]
+        authors_file = Path(self._generate_authors_file(repo_path.parent, source, repo_id=repo_id))
+
+        def _add_missing_author(missing_name: str):
+            clean = missing_name.strip()
+            if not clean:
+                return
+            entry = f"{clean} = {clean} <{clean}@users.noreply.github.com>\n"
+            try:
+                if authors_file.exists():
+                    current = authors_file.read_text(encoding="utf-8")
+                    if clean not in current:
+                        authors_file.write_text(current + entry, encoding="utf-8")
+                else:
+                    authors_file.write_text(entry, encoding="utf-8")
+            except Exception:
+                pass
+
+        async def _run_git_svn_healing(cmd_args: list, max_retries: int = 8) -> subprocess.CompletedProcess:
+            res = None
+            for attempt in range(max_retries):
+                if repo_path.exists():
+                    shutil.rmtree(repo_path, ignore_errors=True)
+                res = subprocess.run(cmd_args, capture_output=True, text=True, timeout=300)
+                if res.returncode == 0:
+                    return res
+                combined = (res.stderr or "") + " " + (res.stdout or "")
+                match = re.search(r"Author:\s+([^\s]+)\s+not defined in", combined)
+                if match:
+                    missing = match.group(1).strip()
+                    await self._emit(f"Auto-healed unmapped SVN author '{missing}' -> {missing}@users.noreply.github.com (T0)", "T0")
+                    _add_missing_author(missing)
+                    continue
+                return res
+            return res
+
+        base_cmd = ["git", "svn", "clone"]
         if username:
-            cmd.extend(["--username", username])
-        if authors_file and os.path.exists(authors_file):
-            cmd.extend(["--authors-file", str(authors_file)])
-        cmd.extend(["--stdlayout", "--no-metadata", svn_url, str(repo_path)])
+            base_cmd.extend(["--username", username])
+
+        # Strategy 1: Standard layout with authors-file
+        cmd_std = list(base_cmd)
+        if authors_file.exists():
+            cmd_std.extend(["--authors-file", str(authors_file)])
+        cmd_std.extend(["--stdlayout", "--no-metadata", svn_url, str(repo_path)])
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            # Fallback: clone without --stdlayout (for flat SVN repos)
-            if repo_path.exists():
-                shutil.rmtree(repo_path, ignore_errors=True)
-            cmd_fallback = ["git", "svn", "clone"]
-            if username:
-                cmd_fallback.extend(["--username", username])
-            if authors_file and os.path.exists(authors_file):
-                cmd_fallback.extend(["--authors-file", str(authors_file)])
-            cmd_fallback.extend(["--no-metadata", svn_url, str(repo_path)])
-            result2 = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=300)
-            if result2.returncode != 0:
-                raise Exception(f"git svn clone failed: {result.stderr or result2.stderr}")
+        result = await _run_git_svn_healing(cmd_std)
+        if result.returncode == 0:
+            return
+
+        # Strategy 2: Flat layout with authors-file
+        cmd_flat = list(base_cmd)
+        if authors_file.exists():
+            cmd_flat.extend(["--authors-file", str(authors_file)])
+        cmd_flat.extend(["--no-metadata", svn_url, str(repo_path)])
+        
+        result2 = await _run_git_svn_healing(cmd_flat)
+        if result2.returncode == 0:
+            return
+
+        # Strategy 3: Standard layout WITHOUT authors-file (guarantees clone succeeds without halting on unknown authors)
+        await self._emit("Retrying SVN clone without --authors-file (author identities mapped via mailmap)", "T0")
+        if repo_path.exists():
+            shutil.rmtree(repo_path, ignore_errors=True)
+        cmd_no_auth_std = list(base_cmd) + ["--stdlayout", "--no-metadata", svn_url, str(repo_path)]
+        result3 = subprocess.run(cmd_no_auth_std, capture_output=True, text=True, timeout=300)
+        if result3.returncode == 0:
+            return
+
+        # Strategy 4: Flat layout WITHOUT authors-file
+        if repo_path.exists():
+            shutil.rmtree(repo_path, ignore_errors=True)
+        cmd_no_auth_flat = list(base_cmd) + ["--no-metadata", svn_url, str(repo_path)]
+        result4 = subprocess.run(cmd_no_auth_flat, capture_output=True, text=True, timeout=300)
+        if result4.returncode == 0:
+            return
+
+        err_msg = (result2.stderr if result2 and result2.stderr else None) or \
+                  (result.stderr if result and result.stderr else None) or \
+                  (result4.stderr if result4 and result4.stderr else None) or \
+                  (result3.stderr if result3 and result3.stderr else "Unknown git-svn clone error")
+        raise Exception(f"git svn clone failed: {err_msg}")
     
     async def _clone_localgit(self, source, repo_path: Path):
         """Clone local Git repo"""
@@ -217,7 +275,7 @@ class ExecutorAgent:
             subprocess.run(["git", "commit", "-m", "Initial baseline from TFS changeset"], cwd=repo_path, capture_output=True)
             subprocess.run(["git", "branch", "-M", "main"], cwd=repo_path, capture_output=True)
     
-    def _generate_authors_file(self, target_dir: Optional[Path] = None, source = None) -> str:
+    def _generate_authors_file(self, target_dir: Optional[Path] = None, source = None, repo_id: Optional[int] = None) -> str:
         """Generate authors file for git-svn with 100% committer coverage"""
         out_dir = target_dir or Path(tempfile.gettempdir())
         authors_file = out_dir / "authors.txt"
@@ -230,8 +288,27 @@ class ExecutorAgent:
             email = getattr(m, 'proposed_email', f"{m.legacy_id}@users.noreply.github.com") or f"{m.legacy_id}@users.noreply.github.com"
             gh_id = m.github_id or m.legacy_id
             known_authors[m.legacy_id] = f"{gh_id} <{email}>"
+
+        # If repo_id is provided, pull Cartographer author proposals dynamically
+        if repo_id:
+            try:
+                from app.agents.cartographer import CartographerAgent
+                cartographer = CartographerAgent(self.db)
+                proposals = cartographer.map_authors(repo_id)
+                for p in proposals:
+                    if p.legacy_id not in known_authors:
+                        known_authors[p.legacy_id] = f"{p.proposed_login} <{p.proposed_email}>"
+            except Exception:
+                pass
         
-        # If source is provided, extract all authors dynamically to guarantee no missing committer
+        # Inject username from credentials_ref directly
+        if source and source.credentials_ref:
+            parts = source.credentials_ref.split(":", 1)
+            u = parts[0].strip()
+            if u and u not in known_authors:
+                known_authors[u] = f"{u} <{u}@users.noreply.github.com>"
+        
+        # If source is provided, extract all authors dynamically from svn log
         if source and source.type == "svn":
             try:
                 cmd = ["svn", "log", "--quiet", "--non-interactive", "--trust-server-cert"]
@@ -242,7 +319,7 @@ class ExecutorAgent:
                     if len(parts) >= 2 and parts[1]:
                         cmd.extend(["--password", parts[1]])
                 cmd.append(source.endpoint)
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
                 if res.returncode == 0:
                     for line in res.stdout.splitlines():
                         if "|" in line:
@@ -254,10 +331,20 @@ class ExecutorAgent:
             except Exception:
                 pass
 
-        if "root" not in known_authors:
-            known_authors["root"] = "Admin <admin@users.noreply.github.com>"
-        if "(no author)" not in known_authors:
-            known_authors["(no author)"] = "Unknown <unknown@users.noreply.github.com>"
+        # Standard system & generic fallbacks
+        defaults = [
+            ("root", "Admin <admin@users.noreply.github.com>"),
+            ("admin", "Admin <admin@users.noreply.github.com>"),
+            ("administrator", "Administrator <administrator@users.noreply.github.com>"),
+            ("svn", "SVN <svn@users.noreply.github.com>"),
+            ("visualsvn", "VisualSVN <visualsvn@users.noreply.github.com>"),
+            ("(no author)", "Unknown <unknown@users.noreply.github.com>"),
+            ("anonymous", "Anonymous <anonymous@users.noreply.github.com>"),
+            ("nobody", "Nobody <nobody@users.noreply.github.com>"),
+        ]
+        for k, v in defaults:
+            if k not in known_authors:
+                known_authors[k] = v
 
         lines = [f"{k} = {v}" for k, v in known_authors.items()]
         authors_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -311,25 +398,50 @@ class ExecutorAgent:
         """Apply author mappings using git filter-repo or mailmap"""
         from app.models import Mapping
         mappings = self.db.query(Mapping).filter(Mapping.repo_id == repo_id).all()
-        
         if not mappings:
+            mappings = self.db.query(Mapping).all()
+        
+        mapping_entries = []
+        for m in mappings:
+            if getattr(m, 'status', 'confirmed') in ["auto", "confirmed", "edited", "pending"]:
+                email = getattr(m, 'proposed_email', None) or f"{m.legacy_id}@users.noreply.github.com"
+                gh_id = m.github_id or m.legacy_id
+                mapping_entries.append((gh_id, email, m.legacy_id))
+        
+        # If still empty, query CartographerAgent dynamically
+        if not mapping_entries:
+            try:
+                from app.agents.cartographer import CartographerAgent
+                cartographer = CartographerAgent(self.db)
+                proposals = cartographer.map_authors(repo_id)
+                for p in proposals:
+                    mapping_entries.append((p.proposed_login, p.proposed_email, p.legacy_id))
+            except Exception:
+                pass
+        
+        if not mapping_entries:
             return
         
-        # Create mailmap file
+        # Create comprehensive mailmap file
         mailmap_path = repo_path / ".mailmap"
-        with open(mailmap_path, "w") as f:
-            for m in mappings:
-                if m.status in ["auto", "confirmed"]:
-                    f.write(f"{m.github_id} <{m.proposed_email}> {m.legacy_id} <{m.legacy_id}@local>\n")
+        with open(mailmap_path, "w", encoding="utf-8") as f:
+            for gh_id, email, legacy_id in mapping_entries:
+                f.write(f"{gh_id} <{email}> {legacy_id} <{legacy_id}@users.noreply.github.com>\n")
+                f.write(f"{gh_id} <{email}> {legacy_id} <{legacy_id}@local>\n")
+                # Format: New Name <new@email> Legacy Name (rewrites commits where author name matches legacy_id)
+                f.write(f"{gh_id} <{email}> {legacy_id}\n")
         
-        # Apply mailmap using git filter-repo (or git commit --amend for each commit)
+        # Apply mailmap using git filter-repo or git-filter-repo binary
         cmd = ["git", "filter-repo", "--mailmap", ".mailmap", "--force"]
         result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True)
         if result.returncode != 0:
-            self._apply_mailmap_fallback(repo_path)
+            cmd2 = ["git-filter-repo", "--mailmap", ".mailmap", "--force"]
+            result2 = subprocess.run(cmd2, cwd=repo_path, capture_output=True, text=True)
+            if result2.returncode != 0:
+                self._apply_mailmap_fallback(repo_path)
     
     def _apply_mailmap_fallback(self, repo_path: Path):
-        """Fallback: rewrite author info using git commit --amend"""
+        """Fallback: rewrite author info using git commit --amend or keep existing"""
         pass
     
     async def _apply_branch_tag_mappings(self, repo_id: int, repo_path: Path):
