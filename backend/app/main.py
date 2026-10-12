@@ -893,6 +893,27 @@ async def translate_ci_pipeline(req: CiTranslateRequest):
     translator = CIPipelineTranslator()
     return translator.translate(req.gitlab_ci_yaml, req.repo_name)
 
+@app.post("/api/admin/clear-database")
+async def clear_database(db: Session = Depends(get_db)):
+    """POST /api/admin/clear-database - Clears all database tables for a fresh UI start"""
+    logger.info("Admin: Clearing all tables in the database")
+    try:
+        from app.models import Finding, Approval, Event, Mapping, Repo, Run, Source
+        db.query(Finding).delete()
+        db.query(Approval).delete()
+        db.query(Event).delete()
+        db.query(Mapping).delete()
+        db.query(Repo).delete()
+        db.query(Run).delete()
+        db.query(Source).delete()
+        db.commit()
+    except Exception as e:
+        logger.error(f"Error clearing database: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    _cached_insights.clear()
+    return {"status": "cleared", "message": "Database completely wiped. Clean slate."}
+
 # Health check
 @app.get("/health")
 async def health():

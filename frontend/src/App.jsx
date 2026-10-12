@@ -60,6 +60,7 @@ export default function App() {
     approveGate,
     downloadCertificate,
     copyToClipboard,
+    handleClearDatabase,
     API_BASE
   } = useProvenanceRun(1);
 
@@ -76,6 +77,7 @@ export default function App() {
         cascadeStats={cascadeStats}
         loadingAction={loadingAction}
         onRunPipeline={() => handleRunFullPipeline(selectedRepoId)}
+        onClearDatabase={handleClearDatabase}
       />
 
       {/* Navigation Tabs Bar */}

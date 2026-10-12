@@ -1,6 +1,6 @@
 import React from 'react';
 import PropTypes from 'prop-types';
-import { Activity, ShieldCheck, Cpu, Play, Loader2 } from 'lucide-react';
+import { Activity, ShieldCheck, Cpu, Play, Loader2, RotateCcw } from 'lucide-react';
 
 export function Header({
   wsConnected,
@@ -9,7 +9,8 @@ export function Header({
   approvedGatesCount,
   cascadeStats,
   loadingAction,
-  onRunPipeline
+  onRunPipeline,
+  onClearDatabase
 }) {
   return (
     <header style={{
@@ -105,6 +106,17 @@ export function Header({
         </div>
 
         <button
+          onClick={onClearDatabase}
+          disabled={Boolean(loadingAction)}
+          className="btn btn-secondary"
+          title="Clear database and start fresh"
+          style={{ fontSize: '0.78rem', padding: '0.45rem 0.85rem' }}
+        >
+          <RotateCcw style={{ width: '13px', height: '13px' }} />
+          <span>Reset DB</span>
+        </button>
+
+        <button
           id="btn-golden-path"
           onClick={onRunPipeline}
           disabled={Boolean(loadingAction)}
@@ -138,5 +150,6 @@ Header.propTypes = {
     budget_tripped: PropTypes.bool
   }).isRequired,
   loadingAction: PropTypes.string,
-  onRunPipeline: PropTypes.func.isRequired
+  onRunPipeline: PropTypes.func.isRequired,
+  onClearDatabase: PropTypes.func
 };

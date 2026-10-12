@@ -446,10 +446,31 @@ export function useProvenanceRun(initialRunId = 1) {
     return handleConnectAndDiscover();
   };
 
-  // Legacy autonomous method preserved for backward-compatibility
-  const handleRunFullGoldenPath = async (overrideType, overrideEndpoint, overrideCreds, overrideOrg) => {
-    await handleConnectAndDiscover(overrideType, overrideEndpoint, overrideCreds, overrideOrg);
-    await handleRunFullPipeline();
+  // Clear all database tables for a clean slate
+  const handleClearDatabase = async () => {
+    if (!window.confirm("Are you sure you want to clear the database? All sources, repos, findings, and runs will be reset.")) return;
+    setLoadingAction('Clearing Database...');
+    try {
+      await fetch(`${API_BASE}/api/admin/clear-database`, { method: 'POST' });
+      setSelectedRepoId(null);
+      setConnectionReport(null);
+      setStageStatuses({
+        scout: 'pending',
+        curator: 'pending',
+        assessor: 'pending',
+        cartographer: 'pending',
+        gates: 'pending',
+        executor: 'pending',
+        prover: 'pending'
+      });
+      setActiveInspectorStage('scout');
+      await invalidateRunQueries(runId);
+      alert('Database cleared successfully! Ready for fresh setup.');
+    } catch (e) {
+      alert(`Clear database failed: ${e.message}`);
+    } finally {
+      setLoadingAction('');
+    }
   };
 
   // Human auditor governance gate approval with targeted cache invalidation
@@ -584,6 +605,7 @@ export function useProvenanceRun(initialRunId = 1) {
     handleRunFullGoldenPath,
     approveGate,
     downloadCertificate,
-    copyToClipboard
+    copyToClipboard,
+    handleClearDatabase
   };
 }
