@@ -137,6 +137,13 @@ class SourceCreate(BaseModel):
     endpoint: str
     credentials_ref: Optional[str] = None
 
+class ConnectAndDiscoverRequest(BaseModel):
+    type: str  # svn, tfs, localgit, github, gitlab, bitbucket, git
+    endpoint: str
+    credentials_ref: Optional[str] = None
+    target_org: Optional[str] = "octathon-target"
+    run_id: Optional[int] = None
+
 class ConnectionReportResponse(BaseModel):
     status: str
     readable_scope: str
@@ -198,6 +205,168 @@ async def create_source(source: SourceCreate, db: Session = Depends(get_db)):
     db.refresh(db_source)
     
     return ConnectionReportResponse(**report.__dict__)
+
+@app.post("/api/sources/connect-and-discover")
+async def connect_and_discover(req: ConnectAndDiscoverRequest, db: Session = Depends(get_db)):
+    """POST /api/sources/connect-and-discover - Validates credentials, connects to VCS, discovers real repositories, and returns them immediately without hardcoding"""
+    logger.info(f"Connecting and discovering VCS source: {req.type} at {req.endpoint}")
+    
+    if req.type not in ["svn", "tfs", "localgit", "github", "gitlab", "bitbucket", "git"]:
+        raise HTTPException(status_code=400, detail=f"Unknown source type: {req.type}")
+    
+    connector = _create_connector(req.type, req.endpoint, req.credentials_ref)
+    if not connector:
+        raise HTTPException(status_code=400, detail=f"Failed to create connector for {req.type}. Check endpoint or credentials.")
+    
+    report = connector.validate()
+    if report.status == "failed":
+        return {
+            "status": "failed",
+            "source_id": None,
+            "run_id": None,
+            "readable_scope": report.readable_scope,
+            "issues": report.issues or ["Authentication or endpoint unreachable"],
+            "fixes": report.fixes or ["Verify credentials and endpoint URL"],
+            "repos": []
+        }
+    
+    # Save or update Source
+    db_source = db.query(Source).filter(Source.type == req.type, Source.endpoint == req.endpoint).first()
+    if not db_source:
+        db_source = Source(
+            type=req.type,
+            endpoint=req.endpoint,
+            credentials_ref=req.credentials_ref,
+            status=report.status,
+            readable_scope=report.readable_scope
+        )
+        db.add(db_source)
+        db.commit()
+        db.refresh(db_source)
+    else:
+        db_source.status = report.status
+        db_source.readable_scope = report.readable_scope
+        db_source.credentials_ref = req.credentials_ref
+        db.commit()
+    
+    # Run discovery through the connector
+    discovered_descs = connector.discover()
+    saved_repos = []
+    
+    for desc in discovered_descs:
+        existing_repo = db.query(Repo).filter(Repo.source_id == db_source.id, Repo.name == desc.name).first()
+        if not existing_repo:
+            new_repo = Repo(
+                source_id=db_source.id,
+                name=desc.name,
+                size=desc.size,
+                commits=desc.commit_count,
+                branches=desc.branch_count,
+                tags=desc.tag_count,
+                contributors=str(desc.contributor_count),
+                last_activity=desc.last_activity,
+                large_files=1 if desc.large_file_flag else 0,
+                risk_tier="LOW"
+            )
+            db.add(new_repo)
+            db.commit()
+            db.refresh(new_repo)
+            saved_repos.append(new_repo)
+        else:
+            existing_repo.size = desc.size
+            existing_repo.commits = desc.commit_count
+            existing_repo.branches = desc.branch_count
+            existing_repo.tags = desc.tag_count
+            existing_repo.contributors = str(desc.contributor_count)
+            existing_repo.last_activity = desc.last_activity
+            existing_repo.large_files = 1 if desc.large_file_flag else 0
+            db.commit()
+            saved_repos.append(existing_repo)
+    
+    # Manage active Run
+    active_run = None
+    if req.run_id:
+        active_run = db.query(Run).filter(Run.id == req.run_id).first()
+    if not active_run:
+        active_run = Run(
+            source_ids=[db_source.id],
+            target_org=req.target_org or "octathon-target",
+            status="discovered",
+            token_budget=100000,
+            tokens_used=0
+        )
+        db.add(active_run)
+        db.commit()
+        db.refresh(active_run)
+    else:
+        current_sources = active_run.source_ids or []
+        if db_source.id not in current_sources:
+            active_run.source_ids = list(set(current_sources + [db_source.id]))
+            db.commit()
+    
+    # Stream WebSocket event
+    await emit_event(active_run.id, {
+        "agent": "Scout",
+        "action": f"Discovered {len(saved_repos)} repositories from {req.type.upper()}",
+        "reason": f"Scope: {report.readable_scope}",
+        "tier": "T0"
+    })
+    
+    def _effort_calc(tier):
+        if tier == "HIGH": return "1-2 weeks"
+        if tier == "MEDIUM": return "3-5 days"
+        return "1-2 days"
+
+    return {
+        "status": report.status,
+        "source_id": db_source.id,
+        "run_id": active_run.id,
+        "readable_scope": report.readable_scope,
+        "issues": report.issues,
+        "fixes": report.fixes,
+        "repos": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "source_type": db_source.type,
+                "size": r.size,
+                "commit_count": r.commits,
+                "branch_count": r.branches,
+                "tag_count": r.tags,
+                "contributor_count": int(r.contributors) if r.contributors else 0,
+                "last_activity": r.last_activity or "",
+                "large_file_flag": bool(r.large_files),
+                "risk_tier": r.risk_tier or "LOW",
+                "risk_factors": r.risk_factors or [],
+                "effort_estimate": _effort_calc(r.risk_tier)
+            }
+            for r in saved_repos
+        ]
+    }
+
+@app.get("/api/sources/{source_id}/repos")
+async def get_source_repos(source_id: int, db: Session = Depends(get_db)):
+    """GET /api/sources/{source_id}/repos - Get all real repositories discovered for a source"""
+    source = db.query(Source).filter(Source.id == source_id).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    repos = db.query(Repo).filter(Repo.source_id == source_id).all()
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "source_type": source.type,
+            "size": r.size,
+            "commit_count": r.commits,
+            "branch_count": r.branches,
+            "tag_count": r.tags,
+            "contributor_count": int(r.contributors) if r.contributors else 0,
+            "last_activity": r.last_activity or "",
+            "large_file_flag": bool(r.large_files),
+            "risk_tier": r.risk_tier or "LOW"
+        }
+        for r in repos
+    ]
 
 @app.get("/api/sources")
 async def list_sources(db: Session = Depends(get_db)):
@@ -416,34 +585,36 @@ async def generate_run_insights(run_id: int, db: Session = Depends(get_db)):
 
 # Phase 2: Assessment & Curation endpoints
 @app.post("/api/runs/{run_id}/assess")
-async def run_assessment(run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Trigger risk assessment for a run"""
+async def run_assessment(run_id: int, background_tasks: BackgroundTasks, repo_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Trigger risk assessment for a run (or specific repo)"""
     run = db.query(Run).filter(Run.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     
-    # Get repo IDs for this run
-    repos = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).all()
-    repo_ids = [r.id for r in repos]
+    if repo_id:
+        repo_ids = [repo_id]
+    else:
+        repos = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).all()
+        repo_ids = [r.id for r in repos]
     
-    # Run assessment in background
     background_tasks.add_task(_run_assessment_background, run_id, repo_ids)
-    
-    return {"run_id": run_id, "status": "assessment_started"}
+    return {"run_id": run_id, "status": "assessment_started", "repo_ids": repo_ids}
 
 @app.post("/api/runs/{run_id}/curate")
-async def run_curation(run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Trigger curation (secret scanning) for a run"""
+async def run_curation(run_id: int, background_tasks: BackgroundTasks, repo_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Trigger curation (secret scanning) for a run (or specific repo)"""
     run = db.query(Run).filter(Run.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     
-    repos = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).all()
-    repo_ids = [r.id for r in repos]
+    if repo_id:
+        repo_ids = [repo_id]
+    else:
+        repos = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).all()
+        repo_ids = [r.id for r in repos]
     
     background_tasks.add_task(_run_curation_background, run_id, repo_ids)
-    
-    return {"run_id": run_id, "status": "curation_started"}
+    return {"run_id": run_id, "status": "curation_started", "repo_ids": repo_ids}
 
 async def _run_assessment_background(run_id: int, repo_ids: List[int]):
     """Background task to run assessment"""
@@ -599,8 +770,8 @@ async def get_cascade_stats(run_id: int):
 
 # Phase 4: Executor endpoints
 @app.post("/api/runs/{run_id}/migrate")
-async def run_migration(run_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """POST /api/runs/{id}/migrate - Execute migration with self-heal"""
+async def run_migration(run_id: int, background_tasks: BackgroundTasks, repo_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """POST /api/runs/{id}/migrate - Execute migration with self-heal (or specific repo)"""
     run = db.query(Run).filter(Run.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -608,11 +779,11 @@ async def run_migration(run_id: int, background_tasks: BackgroundTasks, db: Sess
     run.status = "migrating"
     db.commit()
     
-    background_tasks.add_task(_run_migration_background, run_id)
+    background_tasks.add_task(_run_migration_background, run_id, repo_id)
     
-    return {"run_id": run_id, "status": "migration_started"}
+    return {"run_id": run_id, "status": "migration_started", "repo_id": repo_id}
 
-async def _run_migration_background(run_id: int):
+async def _run_migration_background(run_id: int, target_repo_id: Optional[int] = None):
     """Background task to run migration"""
     db = SessionLocal()
     try:
@@ -623,8 +794,11 @@ async def _run_migration_background(run_id: int):
         if not run:
             return
         
-        repos = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).all()
-        repo_ids = [r.id for r in repos]
+        if target_repo_id:
+            repo_ids = [target_repo_id]
+        else:
+            repos = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).all()
+            repo_ids = [r.id for r in repos]
         
         for repo_id in repo_ids:
             result = await executor.migrate_repo(repo_id)

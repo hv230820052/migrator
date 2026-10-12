@@ -2,16 +2,12 @@ import React from 'react';
 import { useProvenanceRun } from './hooks/useProvenanceRun';
 import { Header } from './components/Header';
 import { NavigationTabs } from './components/NavigationTabs';
-import { OverviewTab } from './components/tabs/OverviewTab';
-import { SourcesTab } from './components/tabs/SourcesTab';
-import { CatalogTab } from './components/tabs/CatalogTab';
+import { MigrationTimelineTab } from './components/tabs/MigrationTimelineTab';
 import { WavePlanningTab } from './components/tabs/WavePlanningTab';
-import { FindingsTab } from './components/tabs/FindingsTab';
-import { MappingsTab } from './components/tabs/MappingsTab';
-import { GatesTab } from './components/tabs/GatesTab';
 import { ControlRoomTab } from './components/tabs/ControlRoomTab';
 import { CiTranslatorTab } from './components/tabs/CiTranslatorTab';
 import { CertificateTab } from './components/tabs/CertificateTab';
+import { CatalogTab } from './components/tabs/CatalogTab';
 
 export default function App() {
   const {
@@ -26,6 +22,8 @@ export default function App() {
     gates,
     cascadeStats,
     events,
+    fidelity,
+    certificate,
     beforeAfter,
     insights,
     handleGenerateInsights,
@@ -35,7 +33,6 @@ export default function App() {
     loadingAction,
     copyFeedback,
     wsConnected,
-    sourcesList,
     customVcsType,
     setCustomVcsType,
     customEndpoint,
@@ -46,7 +43,19 @@ export default function App() {
     setCustomTargetOrg,
     triggerAction,
     updateAuthorMapping,
-    handleConnectSource,
+    handleConnectAndDiscover,
+    stageStatuses,
+    activeInspectorStage,
+    setActiveInspectorStage,
+    connectionReport,
+    isAutoRunning,
+    handleRunCurator,
+    handleRunAssessor,
+    handleRunCartographer,
+    handleRunGates,
+    handleRunExecutor,
+    handleRunProver,
+    handleRunFullPipeline,
     handleRunFullGoldenPath,
     approveGate,
     downloadCertificate,
@@ -66,10 +75,10 @@ export default function App() {
         approvedGatesCount={approvedGatesCount}
         cascadeStats={cascadeStats}
         loadingAction={loadingAction}
-        onRunPipeline={() => handleRunFullGoldenPath()}
+        onRunPipeline={() => handleRunFullPipeline(selectedRepoId)}
       />
 
-      {/* Tab Switcher */}
+      {/* Navigation Tabs Bar */}
       <NavigationTabs
         activeTab={activeTab}
         onSelectTab={setActiveTab}
@@ -77,18 +86,11 @@ export default function App() {
 
       {/* Main Workspace Viewport */}
       <main className="main-content">
-        {activeTab === 'overview' && (
-          <OverviewTab
+        {activeTab === 'timeline' && (
+          <MigrationTimelineTab
             catalog={catalog}
-            insights={insights}
-            loadingAction={loadingAction}
-            onGenerateInsights={handleGenerateInsights}
-            onNavigate={setActiveTab}
-          />
-        )}
-
-        {activeTab === 'sources' && (
-          <SourcesTab
+            selectedRepoId={selectedRepoId}
+            onSelectRepo={setSelectedRepoId}
             customVcsType={customVcsType}
             setCustomVcsType={setCustomVcsType}
             customEndpoint={customEndpoint}
@@ -97,26 +99,33 @@ export default function App() {
             setCustomCreds={setCustomCreds}
             customTargetOrg={customTargetOrg}
             setCustomTargetOrg={setCustomTargetOrg}
-            sourcesList={sourcesList}
             loadingAction={loadingAction}
-            onConnectSource={handleConnectSource}
-            onLaunchMigration={handleRunFullGoldenPath}
-            onRunDiscovery={() =>
-              triggerAction(
-                'Discovering Repositories',
-                () => fetch(`${API_BASE}/api/runs/${runId}/discover`, { method: 'POST' }),
-                [['catalog'], ['cascadeStats', runId], ['waves', runId]]
-              )
-            }
-          />
-        )}
-
-        {activeTab === 'catalog' && (
-          <CatalogTab
-            catalog={catalog}
-            loadingAction={loadingAction}
-            onReassess={handleGenerateInsights}
-            onNavigateToOverview={() => setActiveTab('overview')}
+            stageStatuses={stageStatuses}
+            activeInspectorStage={activeInspectorStage}
+            setActiveInspectorStage={setActiveInspectorStage}
+            connectionReport={connectionReport}
+            isAutoRunning={isAutoRunning}
+            onConnectAndDiscover={handleConnectAndDiscover}
+            onRunCurator={handleRunCurator}
+            onRunAssessor={handleRunAssessor}
+            onRunCartographer={handleRunCartographer}
+            onRunGates={handleRunGates}
+            onRunExecutor={handleRunExecutor}
+            onRunProver={handleRunProver}
+            onRunFullPipeline={handleRunFullPipeline}
+            findings={findings}
+            mappings={mappings}
+            gates={gates}
+            events={events}
+            fidelity={fidelity}
+            certificate={certificate}
+            insights={insights}
+            onUpdateMapping={updateAuthorMapping}
+            onApproveGate={approveGate}
+            onDownloadCertificate={downloadCertificate}
+            copyFeedback={copyFeedback}
+            onCopyText={copyToClipboard}
+            API_BASE={API_BASE}
           />
         )}
 
@@ -131,48 +140,12 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'curator' && (
-          <FindingsTab
-            findings={findings}
-            loadingAction={loadingAction}
-            onRescan={() =>
-              triggerAction(
-                'Curating Findings',
-                () => fetch(`${API_BASE}/api/runs/${runId}/curate`, { method: 'POST' }),
-                [['findings'], ['cascadeStats', runId]]
-              )
-            }
-          />
-        )}
-
-        {activeTab === 'cartographer' && (
-          <MappingsTab
-            mappings={mappings}
-            catalog={catalog}
-            selectedRepoId={selectedRepoId}
-            onSelectRepo={setSelectedRepoId}
-            onUpdateMapping={updateAuthorMapping}
-          />
-        )}
-
-        {activeTab === 'gates' && (
-          <GatesTab
-            gates={gates}
-            loadingAction={loadingAction}
-            onApproveGate={approveGate}
-          />
-        )}
-
         {activeTab === 'control-room' && (
           <ControlRoomTab
             runId={runId}
             events={events}
             loadingAction={loadingAction}
-            onExecuteMigration={() =>
-              triggerAction('Starting Migration', () =>
-                fetch(`${API_BASE}/api/runs/${runId}/migrate`, { method: 'POST' })
-              )
-            }
+            onExecuteMigration={() => handleRunExecutor(selectedRepoId)}
             API_BASE={API_BASE}
           />
         )}
@@ -191,6 +164,15 @@ export default function App() {
             copyFeedback={copyFeedback}
             onCopyCommand={copyToClipboard}
             onDownloadCert={downloadCertificate}
+          />
+        )}
+
+        {activeTab === 'catalog' && (
+          <CatalogTab
+            catalog={catalog}
+            loadingAction={loadingAction}
+            onReassess={handleGenerateInsights}
+            onNavigateToOverview={() => setActiveTab('timeline')}
           />
         )}
       </main>
