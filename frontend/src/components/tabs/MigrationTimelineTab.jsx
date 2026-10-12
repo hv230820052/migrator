@@ -26,7 +26,10 @@ import {
   ChevronRight,
   AlertTriangle,
   GitBranch,
-  GitCommit
+  GitCommit,
+  Clock,
+  Search,
+  FolderGit2
 } from 'lucide-react';
 
 const VCS_PRESETS = [
@@ -120,6 +123,12 @@ export function MigrationTimelineTab({
   onDownloadCertificate,
   copyFeedback,
   onCopyText,
+  accountRepos = [],
+  setAccountRepos,
+  isFetchingAccountRepos = false,
+  onFetchAccountRepos,
+  pipelineElapsedSeconds = 0,
+  pipelineLiveStep = '',
   API_BASE
 }) {
   const [showCreds, setShowCreds] = useState(false);
@@ -128,12 +137,67 @@ export function MigrationTimelineTab({
   const [editEmail, setEditEmail] = useState('');
   const [eventFilter, setEventFilter] = useState('ALL');
 
+  // Dedicated SVN credential inputs for effortless credential-only flow
+  const initialUser = customCreds && customCreds.includes(':') ? customCreds.split(':')[0] : (customCreds || 'abhaypundora17');
+  const initialPass = customCreds && customCreds.includes(':') ? customCreds.split(':')[1] : 'i@mdeveloperpro';
+  const [svnUsername, setSvnUsername] = useState(initialUser);
+  const [svnPassword, setSvnPassword] = useState(initialPass);
+  const [svnProvider, setSvnProvider] = useState('sourceforge');
+  const [customSvnServerUrl, setCustomSvnServerUrl] = useState('');
+  const [showManualEndpoint, setShowManualEndpoint] = useState(false);
+  const [hasFetchedRepos, setHasFetchedRepos] = useState(false);
+
   const selectedRepo = catalog.find((r) => r.id === selectedRepoId) || catalog[0] || null;
+
+  const handleUpdateSvnCreds = (newU, newP) => {
+    setSvnUsername(newU);
+    setSvnPassword(newP);
+    setCustomCreds(`${newU}:${newP}`);
+  };
+
+  const handleFetchAccountReposClick = async () => {
+    setHasFetchedRepos(true);
+    if (onFetchAccountRepos) {
+      const u = svnUsername || (customCreds.includes(':') ? customCreds.split(':')[0] : customCreds);
+      const p = svnPassword || (customCreds.includes(':') ? customCreds.split(':')[1] : '');
+      await onFetchAccountRepos(customVcsType, u, p, customCreds, svnProvider === 'custom' ? customSvnServerUrl : '');
+    }
+  };
+
+  const handleSelectAccountRepo = async (ar) => {
+    setCustomEndpoint(ar.endpoint);
+    const creds = `${svnUsername}:${svnPassword}`;
+    setCustomCreds(creds);
+    if (onConnectAndDiscover) {
+      await onConnectAndDiscover(ar.source_type || customVcsType, ar.endpoint, creds, customTargetOrg);
+    }
+  };
 
   const handleApplyPreset = (preset) => {
     setCustomVcsType(preset.type);
     setCustomEndpoint(preset.endpoint);
     setCustomCreds(preset.creds);
+    if (preset.creds.includes(':')) {
+      const parts = preset.creds.split(':');
+      setSvnUsername(parts[0]);
+      setSvnPassword(parts[1] || '');
+    }
+  };
+
+  const formatStopwatch = (seconds) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}s`;
+  };
+
+  const calcProgressPct = () => {
+    const stageIds = ['scout', 'curator', 'assessor', 'cartographer', 'gates', 'executor', 'prover'];
+    let completedCount = 0;
+    stageIds.forEach((id) => {
+      if (stageStatuses[id] === 'completed') completedCount += 1;
+      else if (stageStatuses[id] === 'running') completedCount += 0.5;
+    });
+    return Math.min(100, Math.round((completedCount / stageIds.length) * 100));
   };
 
   const handleStartEditing = (mapItem) => {
@@ -223,8 +287,8 @@ export function MigrationTimelineTab({
           </div>
         </div>
 
-        {/* Form Grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem', marginBottom: '1.5rem' }}>
+        {/* Credentials & Account Discovery Form */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem', marginBottom: '1.25rem' }}>
           <div>
             <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
               VCS Provider Type
@@ -243,76 +307,191 @@ export function MigrationTimelineTab({
                 color: 'var(--text-primary)'
               }}
             >
-              <option value="svn">Subversion (SVN - Remote or Local)</option>
+              <option value="svn">Subversion (SVN Account Discovery)</option>
               <option value="github">GitHub (Cloud Organization or User)</option>
-              <option value="gitlab">GitLab (Cloud or Self-Hosted Git URL)</option>
-              <option value="bitbucket">Bitbucket (Remote Repository URL)</option>
+              <option value="gitlab">GitLab (Cloud or Self-Hosted Projects)</option>
+              <option value="bitbucket">Bitbucket (Repositories in Workspace)</option>
               <option value="localgit">Local Git (Filesystem Directory)</option>
               <option value="tfs">Team Foundation Server (TFVC Changeset)</option>
             </select>
           </div>
 
-          <div style={{ gridColumn: 'span 2' }}>
-            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
-              Endpoint URL, Path, or Organization
-            </label>
-            <input
-              type="text"
-              value={customEndpoint}
-              onChange={(e) => setCustomEndpoint(e.target.value)}
-              placeholder="e.g. https://svn.code.sf.net/p/demo-svn-repo/svn or octocat or /app/samples/localgit"
-              style={{
-                width: '100%',
-                padding: '0.6rem 0.85rem',
-                borderRadius: 'var(--radius-sm)',
-                border: '1px solid var(--border-subtle)',
-                background: 'var(--surface-primary)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '0.83rem',
-                color: 'var(--text-primary)'
-              }}
-            />
-          </div>
+          {customVcsType === 'svn' ? (
+            <>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  SVN Username
+                </label>
+                <input
+                  type="text"
+                  value={svnUsername}
+                  onChange={(e) => handleUpdateSvnCreds(e.target.value, svnPassword)}
+                  placeholder="e.g. abhaypundora17"
+                  style={{
+                    width: '100%',
+                    padding: '0.6rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--surface-primary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.83rem',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+              </div>
 
-          <div>
-            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
-              Credentials / Personal Access Token
-            </label>
-            <div style={{ position: 'relative' }}>
-              <input
-                type={showCreds ? 'text' : 'password'}
-                value={customCreds}
-                onChange={(e) => setCustomCreds(e.target.value)}
-                placeholder="username:password or ghp_pat..."
-                style={{
-                  width: '100%',
-                  padding: '0.6rem 2.5rem 0.6rem 0.85rem',
-                  borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--border-subtle)',
-                  background: 'var(--surface-primary)',
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '0.83rem',
-                  color: 'var(--text-primary)'
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => setShowCreds(!showCreds)}
-                style={{
-                  position: 'absolute',
-                  right: '0.6rem',
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  color: 'var(--text-tertiary)'
-                }}
-              >
-                {showCreds ? <EyeOff style={{ width: '15px', height: '15px' }} /> : <Eye style={{ width: '15px', height: '15px' }} />}
-              </button>
-            </div>
-          </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  SVN Password / Auth Token
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showCreds ? 'text' : 'password'}
+                    value={svnPassword}
+                    onChange={(e) => handleUpdateSvnCreds(svnUsername, e.target.value)}
+                    placeholder="e.g. i@mdeveloperpro"
+                    style={{
+                      width: '100%',
+                      padding: '0.6rem 2.5rem 0.6rem 0.85rem',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid var(--border-subtle)',
+                      background: 'var(--surface-primary)',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.83rem',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCreds(!showCreds)}
+                    style={{
+                      position: 'absolute',
+                      right: '0.6rem',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--text-tertiary)'
+                    }}
+                  >
+                    {showCreds ? <EyeOff style={{ width: '15px', height: '15px' }} /> : <Eye style={{ width: '15px', height: '15px' }} />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  SVN Platform / Host
+                </label>
+                <select
+                  value={svnProvider}
+                  onChange={(e) => setSvnProvider(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '0.6rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--surface-primary)',
+                    fontFamily: 'var(--font-sans)',
+                    fontSize: '0.85rem',
+                    color: 'var(--text-primary)'
+                  }}
+                >
+                  <option value="sourceforge">SourceForge (sourceforge.net)</option>
+                  <option value="custom">Self-Hosted / Custom SVN Server</option>
+                </select>
+              </div>
+
+              {svnProvider === 'custom' && (
+                <div style={{ gridColumn: 'span 2' }}>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                    Custom SVN Server URL
+                  </label>
+                  <input
+                    type="text"
+                    value={customSvnServerUrl}
+                    onChange={(e) => setCustomSvnServerUrl(e.target.value)}
+                    placeholder="https://svn.mycompany.com/svn"
+                    style={{
+                      width: '100%',
+                      padding: '0.6rem 0.85rem',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid var(--border-subtle)',
+                      background: 'var(--surface-primary)',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.83rem',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div style={{ gridColumn: 'span 2' }}>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  Account / Organization / Path
+                </label>
+                <input
+                  type="text"
+                  value={customEndpoint}
+                  onChange={(e) => setCustomEndpoint(e.target.value)}
+                  placeholder="e.g. octocat or /app/samples/localgit"
+                  style={{
+                    width: '100%',
+                    padding: '0.6rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    background: 'var(--surface-primary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.83rem',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+                  Personal Access Token / Password
+                </label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    type={showCreds ? 'text' : 'password'}
+                    value={customCreds}
+                    onChange={(e) => setCustomCreds(e.target.value)}
+                    placeholder="ghp_pat or glpat-..."
+                    style={{
+                      width: '100%',
+                      padding: '0.6rem 2.5rem 0.6rem 0.85rem',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid var(--border-subtle)',
+                      background: 'var(--surface-primary)',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.83rem',
+                      color: 'var(--text-primary)'
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCreds(!showCreds)}
+                    style={{
+                      position: 'absolute',
+                      right: '0.6rem',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--text-tertiary)'
+                    }}
+                  >
+                    {showCreds ? <EyeOff style={{ width: '15px', height: '15px' }} /> : <Eye style={{ width: '15px', height: '15px' }} />}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
 
           <div>
             <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
@@ -337,17 +516,63 @@ export function MigrationTimelineTab({
           </div>
         </div>
 
-        {/* Action Button & Connection Feedback */}
+        {/* Manual URL entry toggle (for power users) */}
+        {showManualEndpoint && (
+          <div style={{ marginBottom: '1.25rem', padding: '1rem', background: 'var(--canvas-bg)', borderRadius: 'var(--radius-sm)', border: '1px dashed var(--border-subtle)' }}>
+            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>
+              Direct Repository Endpoint URL (Manual Override)
+            </label>
+            <input
+              type="text"
+              value={customEndpoint}
+              onChange={(e) => setCustomEndpoint(e.target.value)}
+              placeholder="e.g. https://svn.code.sf.net/p/demo-svn-repo/svn"
+              style={{
+                width: '100%',
+                padding: '0.6rem 0.85rem',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-subtle)',
+                background: 'var(--surface-primary)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '0.83rem',
+                color: 'var(--text-primary)'
+              }}
+            />
+          </div>
+        )}
+
+        {/* Action Buttons & Connection Feedback */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
-          <button
-            onClick={() => onConnectAndDiscover(customVcsType, customEndpoint, customCreds, customTargetOrg)}
-            disabled={!!loadingAction}
-            className="btn btn-primary"
-            style={{ padding: '0.65rem 1.4rem' }}
-          >
-            <Network style={{ width: '15px', height: '15px' }} />
-            <span>{loadingAction ? 'Connecting & Discovering...' : 'Connect & Discover Repositories'}</span>
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <button
+              onClick={handleFetchAccountReposClick}
+              disabled={isFetchingAccountRepos || (customVcsType === 'svn' && !svnUsername)}
+              className="btn btn-primary"
+              style={{ padding: '0.65rem 1.4rem' }}
+            >
+              {isFetchingAccountRepos ? (
+                <RotateCw style={{ width: '15px', height: '15px', animation: 'spin 1s linear infinite' }} />
+              ) : (
+                <Search style={{ width: '15px', height: '15px' }} />
+              )}
+              <span>{isFetchingAccountRepos ? 'Discovering Account Repositories...' : '🔍 Fetch Repositories in My Account'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowManualEndpoint(!showManualEndpoint)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-secondary)',
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                textDecoration: 'underline'
+              }}
+            >
+              {showManualEndpoint ? '▲ Hide manual direct URL input' : '▼ Or enter manual repository URL'}
+            </button>
+          </div>
 
           {connectionReport && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.82rem' }}>
@@ -365,6 +590,93 @@ export function MigrationTimelineTab({
             </div>
           )}
         </div>
+
+        {/* Discovered Account Repositories Cards Showcase */}
+        {isFetchingAccountRepos && (
+          <div style={{ marginTop: '1.25rem', padding: '1.25rem', background: 'var(--surface-secondary)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <RotateCw className="animate-spin" style={{ width: '20px', height: '20px', color: 'var(--brand-primary)' }} />
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)' }}>
+                Querying {customVcsType.toUpperCase()} Account for Repositories...
+              </div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                Contacting account API for user &quot;{svnUsername || customCreds}&quot;, inspecting project tools, and indexing repository mount points.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {accountRepos && accountRepos.length > 0 && (
+          <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <FolderGit2 style={{ width: '18px', height: '18px', color: 'var(--brand-primary)' }} />
+                <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                  Discovered Repositories in Account &quot;{svnUsername || customCreds}&quot; ({accountRepos.length})
+                </span>
+              </div>
+              <span className="badge badge-connected" style={{ fontSize: '0.72rem' }}>
+                1-CLICK MIGRATION TARGETING
+              </span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))', gap: '1rem' }}>
+              {accountRepos.map((ar, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    padding: '1.1rem',
+                    borderRadius: 'var(--radius-md)',
+                    border: customEndpoint === ar.endpoint ? '2px solid var(--brand-primary)' : '1px solid var(--border-subtle)',
+                    background: customEndpoint === ar.endpoint ? 'var(--surface-secondary)' : 'var(--surface-primary)',
+                    boxShadow: customEndpoint === ar.endpoint ? '0 0 0 1px var(--brand-primary)' : 'none',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.4rem' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                        {ar.display_name || ar.name}
+                      </div>
+                      <span className="badge badge-t0" style={{ fontSize: '0.65rem' }}>
+                        {ar.provider || 'SVN'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                      {ar.description || 'Subversion repository mount'}
+                    </div>
+                    <div style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', background: 'var(--canvas-bg)', padding: '0.35rem 0.5rem', borderRadius: '4px', wordBreak: 'break-all', marginBottom: '0.85rem' }}>
+                      {ar.endpoint}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSelectAccountRepo(ar)}
+                    className="btn btn-primary"
+                    style={{ width: '100%', padding: '0.55rem', fontSize: '0.8rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+                  >
+                    <Play style={{ width: '13px', height: '13px' }} />
+                    <span>Select &amp; Migrate This Repository</span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {hasFetchedRepos && !isFetchingAccountRepos && (!accountRepos || accountRepos.length === 0) && (
+          <div style={{ marginTop: '1.25rem', padding: '1rem', background: 'var(--canvas-bg)', borderRadius: 'var(--radius-sm)', border: '1px dashed var(--border-subtle)', textAlign: 'center' }}>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+              No repositories found for account &quot;{svnUsername || customCreds}&quot;.
+            </div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '0.25rem' }}>
+              Verify your username/password credentials or enter a direct repository URL manually.
+            </div>
+          </div>
+        )}
       </div>
 
       {/* SECTION 2: Discovered Repositories Selection */}
@@ -490,12 +802,102 @@ export function MigrationTimelineTab({
           Click on any milestone below to inspect its detailed live findings, author overrides, governance checks, or parity proof in real time.
         </p>
 
+        {/* Dynamic Pipeline Running Animation & Telemetry HUD */}
+        {(isAutoRunning || !!loadingAction || Object.values(stageStatuses).includes('running')) && (
+          <div
+            style={{
+              marginBottom: '1.5rem',
+              padding: '1.25rem 1.5rem',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid #38bdf8',
+              background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)',
+              boxShadow: '0 4px 16px rgba(2, 132, 199, 0.12)'
+            }}
+          >
+            {/* Top row: Status radar, active stage title, and live stopwatch timer */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '0.9rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <span className="radar-ping" style={{ width: '12px', height: '12px', borderRadius: '50%', background: '#0284c7' }} />
+                <span style={{ fontWeight: 800, fontSize: '0.88rem', color: '#0369a1', letterSpacing: '0.04em' }}>
+                  PIPELINE ACTIVELY EXECUTING
+                </span>
+                <span className="badge badge-t2" style={{ fontSize: '0.7rem' }}>
+                  AUTONOMOUS VERIFICATION
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.82rem', fontWeight: 600, color: '#0369a1' }}>
+                  <Clock style={{ width: '15px', height: '15px', animation: 'spin 3s linear infinite' }} />
+                  <span>Elapsed: <strong>{formatStopwatch(pipelineElapsedSeconds)}</strong></span>
+                </div>
+                <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#0284c7' }}>
+                  {calcProgressPct()}% COMPLETE
+                </div>
+              </div>
+            </div>
+
+            {/* Candy-Stripe Animated Progress Track */}
+            <div
+              style={{
+                width: '100%',
+                height: '8px',
+                borderRadius: '4px',
+                background: '#cbd5e1',
+                overflow: 'hidden',
+                marginBottom: '1rem',
+                position: 'relative'
+              }}
+            >
+              <div
+                className="pipeline-progress-bar"
+                style={{
+                  height: '100%',
+                  width: `${Math.max(12, calcProgressPct())}%`,
+                  background: 'linear-gradient(90deg, #0284c7 0%, #38bdf8 100%)',
+                  borderRadius: '4px',
+                  transition: 'width 0.4s ease'
+                }}
+              />
+            </div>
+
+            {/* Real-time Ticker & Micro-Task Console */}
+            <div
+              style={{
+                background: '#0f172a',
+                color: '#f8fafc',
+                padding: '0.75rem 1rem',
+                borderRadius: 'var(--radius-sm)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.75rem',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '0.8rem',
+                border: '1px solid #1e293b'
+              }}
+            >
+              <Terminal style={{ width: '15px', height: '15px', color: '#38bdf8', flexShrink: 0 }} />
+              <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ color: '#38bdf8', fontWeight: 600 }}>[STREAM]</span>{' '}
+                <span className="shimmer-active-stage" style={{ fontWeight: 600 }}>
+                  {pipelineLiveStep || 'Autonomous pipeline orchestrator running stage verification...'}
+                </span>
+                <span className="terminal-caret" />
+              </div>
+              <span style={{ fontSize: '0.7rem', color: '#94a3b8', flexShrink: 0 }}>
+                NON-BLOCKING ENGINE
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Horizontal Milestone Stepper */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '0.65rem', marginBottom: '1.75rem', overflowX: 'auto' }}>
           {TIMELINE_STAGES.map((stage) => {
             const Icon = stage.icon;
             const status = stageStatuses[stage.id] || 'pending';
             const isInspecting = activeInspectorStage === stage.id;
+            const isRunning = status === 'running';
 
             let statusBg = 'var(--surface-primary)';
             let statusColor = 'var(--text-secondary)';
@@ -505,7 +907,7 @@ export function MigrationTimelineTab({
               statusBg = '#f0fdf4';
               statusColor = '#166534';
               borderColor = '#bbf7d0';
-            } else if (status === 'running') {
+            } else if (isRunning) {
               statusBg = '#f0f9ff';
               statusColor = '#0369a1';
               borderColor = '#0284c7';
@@ -519,6 +921,7 @@ export function MigrationTimelineTab({
               <div
                 key={stage.id}
                 onClick={() => setActiveInspectorStage(stage.id)}
+                className={isRunning ? 'timeline-node-running' : ''}
                 style={{
                   padding: '1rem 0.75rem',
                   borderRadius: 'var(--radius-sm)',
@@ -538,17 +941,17 @@ export function MigrationTimelineTab({
                   width: '32px',
                   height: '32px',
                   borderRadius: '50%',
-                  background: isInspecting ? 'var(--brand-primary)' : 'var(--surface-primary)',
+                  background: isInspecting ? 'var(--brand-primary)' : isRunning ? '#e0f2fe' : 'var(--surface-primary)',
                   color: isInspecting ? '#ffffff' : statusColor,
-                  border: '1px solid var(--border-subtle)',
+                  border: isRunning ? '1px solid #38bdf8' : '1px solid var(--border-subtle)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center'
                 }}>
                   {status === 'completed' ? (
                     <CheckCircle2 style={{ width: '16px', height: '16px', color: '#166534' }} />
-                  ) : status === 'running' ? (
-                    <RotateCw style={{ width: '16px', height: '16px', animation: 'spin 1s linear infinite' }} />
+                  ) : isRunning ? (
+                    <RotateCw style={{ width: '16px', height: '16px', animation: 'spin 1s linear infinite', color: '#0284c7' }} />
                   ) : (
                     <Icon style={{ width: '16px', height: '16px' }} />
                   )}
@@ -560,11 +963,11 @@ export function MigrationTimelineTab({
 
                 <span
                   className={`badge ${
-                    status === 'completed' ? 'badge-connected' : status === 'running' ? 'badge-t2' : status === 'failed' ? 'badge-danger' : 'badge-t0'
+                    status === 'completed' ? 'badge-connected' : isRunning ? 'badge-t2' : status === 'failed' ? 'badge-danger' : 'badge-t0'
                   }`}
                   style={{ fontSize: '0.62rem', padding: '0.15rem 0.45rem' }}
                 >
-                  {status.toUpperCase()}
+                  {isRunning ? 'RUNNING NOW' : status.toUpperCase()}
                 </span>
               </div>
             );

@@ -409,3 +409,119 @@ body {
 .animate-fade-in {
   animation: fadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Radar Ripple Wave Animation */
+@keyframes radarRipple {
+  0% { transform: scale(0.9); opacity: 0.9; }
+  50% { transform: scale(1.6); opacity: 0.3; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+.radar-ping {
+  position: relative;
+  display: inline-flex;
+}
+.radar-ping::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  border-radius: 50%;
+  background-color: #0284c7;
+  animation: radarRipple 1.8s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+  z-index: 0;
+}
+
+/* Candy-Stripe Dynamic Progress Bar */
+@keyframes candyStripe {
+  0% { background-position: 0 0; }
+  100% { background-position: 40px 0; }
+}
+
+.pipeline-progress-bar {
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.2) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.2) 50%,
+    rgba(255, 255, 255, 0.2) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 28px 28px;
+  animation: candyStripe 0.9s linear infinite;
+}
+
+/* Active Running Node Glow Pulse */
+@keyframes activeNodePulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(2, 132, 199, 0.4), 0 0 10px rgba(2, 132, 199, 0.2);
+    border-color: #0284c7;
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(2, 132, 199, 0.12), 0 0 22px rgba(2, 132, 199, 0.35);
+    border-color: #38bdf8;
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(2, 132, 199, 0.4), 0 0 10px rgba(2, 132, 199, 0.2);
+    border-color: #0284c7;
+  }
+}
+
+.timeline-node-running {
+  animation: activeNodePulse 2s ease-in-out infinite !important;
+  background: #f0f9ff !important;
+}
+
+/* Laser Flow Track Between Milestones */
+@keyframes laserFlow {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.timeline-laser-track {
+  background: linear-gradient(90deg, #e2e8f0 0%, #38bdf8 50%, #e2e8f0 100%);
+  background-size: 200% 100%;
+  animation: laserFlow 2s linear infinite;
+}
+
+/* Shimmer Text Gradient */
+@keyframes shimmerText {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.shimmer-active-stage {
+  background: linear-gradient(90deg, #0284c7, #4f46e5, #0284c7);
+  background-size: 200% auto;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: shimmerText 3s ease infinite;
+}
+
+/* Blinking Terminal Cursor */
+@keyframes blinkCaret {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.terminal-caret {
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  background-color: #0284c7;
+  vertical-align: middle;
+  margin-left: 3px;
+  animation: blinkCaret 0.8s steps(1) infinite;
+}

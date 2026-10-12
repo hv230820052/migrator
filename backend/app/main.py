@@ -13,6 +13,9 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 import json
 import uuid
+import subprocess
+import urllib.request
+import base64
 
 # Local imports
 from .models import Base, Source, Repo, Run, Event, Approval, SessionLocal, engine, init_db, Finding
@@ -367,6 +370,215 @@ async def get_source_repos(source_id: int, db: Session = Depends(get_db)):
         }
         for r in repos
     ]
+
+class AccountReposRequest(BaseModel):
+    type: str = "svn"  # svn, github, gitlab, bitbucket, localgit
+    username: Optional[str] = ""
+    password: Optional[str] = ""
+    token: Optional[str] = ""
+    server_url: Optional[str] = ""
+
+@app.post("/api/sources/list-account-repos")
+@app.get("/api/sources/list-account-repos")
+async def list_account_repos(
+    req: Optional[AccountReposRequest] = None,
+    type: Optional[str] = None,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    token: Optional[str] = None,
+    server_url: Optional[str] = None
+):
+    """Dynamically discover and list all repositories in a user's account using credentials alone"""
+    vcs_type = (req.type if req else type) or "svn"
+    user = ((req.username if req else username) or "").strip()
+    pwd = ((req.password if req else password) or "").strip()
+    tok = ((req.token if req else token) or "").strip()
+    srv = ((req.server_url if req else server_url) or "").strip()
+    
+    # If token has username:password format
+    if tok and ":" in tok and not user:
+        user, pwd = tok.split(":", 1)
+    
+    repos = []
+    
+    # 1. SVN Account Discovery
+    if vcs_type == "svn":
+        # SourceForge SVN discovery if username is provided
+        if user:
+            try:
+                sf_profile_url = f"https://sourceforge.net/rest/u/{user}/profile"
+                sf_req = urllib.request.Request(sf_profile_url, headers={"User-Agent": "Provenance-Migrator/1.0"})
+                with urllib.request.urlopen(sf_req, timeout=8) as r:
+                    profile = json.loads(r.read().decode("utf-8"))
+                    for p in profile.get("projects", []):
+                        p_name = p.get("name")
+                        if not p_name:
+                            continue
+                        try:
+                            # Inspect project tools to get exact SVN mount points and clone URLs
+                            p_url = f"https://sourceforge.net/rest/p/{p_name}"
+                            p_req = urllib.request.Request(p_url, headers={"User-Agent": "Provenance-Migrator/1.0"})
+                            with urllib.request.urlopen(p_req, timeout=6) as pr:
+                                p_data = json.loads(pr.read().decode("utf-8"))
+                                svn_tools = [t for t in p_data.get("tools", []) if t.get("name") == "svn"]
+                                for tool in svn_tools:
+                                    mp = tool.get("mount_point", "svn")
+                                    clone_url = tool.get("clone_url_https_anon") or f"https://svn.code.sf.net/p/{p_name}/{mp}/"
+                                    mount_label = tool.get("mount_label") or mp
+                                    display_label = f"{p_name} ({mount_label})" if mount_label.lower() not in ["svn", "code"] else p_name
+                                    repos.append({
+                                        "name": p_name,
+                                        "display_name": display_label,
+                                        "endpoint": clone_url.rstrip("/"),
+                                        "last_updated": p.get("last_updated", "")[:19].replace("T", " "),
+                                        "source_type": "svn",
+                                        "description": p_data.get("summary") or f"SourceForge Subversion Repository ({mp})",
+                                        "provider": "SourceForge"
+                                    })
+                        except Exception:
+                            # Fallback standard SVN mount point
+                            repos.append({
+                                "name": p_name,
+                                "display_name": p_name,
+                                "endpoint": f"https://svn.code.sf.net/p/{p_name}/svn",
+                                "last_updated": p.get("last_updated", "")[:19].replace("T", " "),
+                                "source_type": "svn",
+                                "description": "SourceForge Subversion Repository",
+                                "provider": "SourceForge"
+                            })
+            except Exception as e:
+                logger.warning(f"SourceForge profile discovery note for {user}: {e}")
+
+        # If custom SVN server URL provided or if repos empty
+        if srv:
+            try:
+                cmd = ["svn", "list", "--non-interactive", "--trust-server-cert"]
+                if user:
+                    cmd.extend(["--username", user])
+                if pwd:
+                    cmd.extend(["--password", pwd])
+                cmd.append(srv)
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+                if res.returncode == 0:
+                    for line in res.stdout.splitlines():
+                        entry = line.strip().rstrip("/")
+                        if entry:
+                            repos.append({
+                                "name": entry,
+                                "display_name": entry,
+                                "endpoint": f"{srv.rstrip('/')}/{entry}",
+                                "last_updated": "Remote SVN",
+                                "source_type": "svn",
+                                "description": f"Repository on {srv}",
+                                "provider": "Custom SVN"
+                            })
+            except Exception as e:
+                logger.warning(f"Custom SVN server discovery note: {e}")
+
+        # Check local SVN repositories
+        for local_dir in [Path("/app/data/messy-svn-repo"), Path("/app/data/demo-svn-repo")]:
+            if local_dir.exists():
+                rname = local_dir.name
+                if not any(r["name"] == rname for r in repos):
+                    repos.append({
+                        "name": rname,
+                        "display_name": f"{rname} (Local SVN Sample)",
+                        "endpoint": f"file://{local_dir}",
+                        "last_updated": "Local Workspace",
+                        "source_type": "svn",
+                        "description": "Local test SVN repository",
+                        "provider": "Local SVN"
+                    })
+
+    # 2. GitHub Account Discovery
+    elif vcs_type == "github":
+        auth_token = tok or pwd or os.environ.get("GITHUB_PAT", "")
+        headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "Provenance-Migrator/1.0"}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        try:
+            gh_url = "https://api.github.com/user/repos?per_page=50&sort=updated" if auth_token else f"https://api.github.com/users/{user}/repos?per_page=50&sort=updated"
+            gh_req = urllib.request.Request(gh_url, headers=headers)
+            with urllib.request.urlopen(gh_req, timeout=10) as r:
+                gh_repos = json.loads(r.read().decode("utf-8"))
+                for gr in gh_repos:
+                    repos.append({
+                        "name": gr.get("name"),
+                        "display_name": gr.get("full_name"),
+                        "endpoint": gr.get("clone_url"),
+                        "last_updated": (gr.get("updated_at") or "")[:19].replace("T", " "),
+                        "source_type": "github",
+                        "description": gr.get("description") or f"GitHub Repository ({gr.get('visibility', 'public')})",
+                        "provider": "GitHub"
+                    })
+        except Exception as e:
+            logger.warning(f"GitHub account discovery error: {e}")
+
+    # 3. GitLab Account Discovery
+    elif vcs_type == "gitlab":
+        gl_token = tok or pwd
+        if gl_token:
+            try:
+                gl_url = "https://gitlab.com/api/v4/projects?membership=true&per_page=50&order_by=updated_at"
+                gl_req = urllib.request.Request(gl_url, headers={"PRIVATE-TOKEN": gl_token, "User-Agent": "Provenance/1.0"})
+                with urllib.request.urlopen(gl_req, timeout=10) as r:
+                    gl_projects = json.loads(r.read().decode("utf-8"))
+                    for gp in gl_projects:
+                        repos.append({
+                            "name": gp.get("name"),
+                            "display_name": gp.get("path_with_namespace"),
+                            "endpoint": gp.get("http_url_to_repo"),
+                            "last_updated": (gp.get("last_activity_at") or "")[:19].replace("T", " "),
+                            "source_type": "gitlab",
+                            "description": gp.get("description") or "GitLab Project",
+                            "provider": "GitLab"
+                        })
+            except Exception as e:
+                logger.warning(f"GitLab discovery error: {e}")
+
+    # 4. Bitbucket Account Discovery
+    elif vcs_type == "bitbucket":
+        if user and pwd:
+            try:
+                bb_url = f"https://api.bitbucket.org/2.0/repositories/{user}?pagelen=50"
+                cred_bytes = f"{user}:{pwd}".encode("utf-8")
+                bb_req = urllib.request.Request(bb_url, headers={"Authorization": f"Basic {base64.b64encode(cred_bytes).decode()}", "User-Agent": "Provenance/1.0"})
+                with urllib.request.urlopen(bb_req, timeout=10) as r:
+                    bb_data = json.loads(r.read().decode("utf-8"))
+                    for br in bb_data.get("values", []):
+                        clone_links = [link.get("href") for link in br.get("links", {}).get("clone", []) if link.get("name") == "https"]
+                        repos.append({
+                            "name": br.get("name"),
+                            "display_name": br.get("full_name"),
+                            "endpoint": clone_links[0] if clone_links else f"https://bitbucket.org/{br.get('full_name')}.git",
+                            "last_updated": (br.get("updated_on") or "")[:19].replace("T", " "),
+                            "source_type": "bitbucket",
+                            "description": br.get("description") or "Bitbucket Repository",
+                            "provider": "Bitbucket"
+                        })
+            except Exception as e:
+                logger.warning(f"Bitbucket discovery error: {e}")
+
+    # 5. Local Git Discovery
+    elif vcs_type == "localgit":
+        local_sample = Path("/app/samples/localgit")
+        if local_sample.exists():
+            repos.append({
+                "name": "localgit-sample",
+                "display_name": "localgit-sample (Fixture Repository)",
+                "endpoint": str(local_sample),
+                "last_updated": "Local Disk",
+                "source_type": "localgit",
+                "description": "Local Git mirror fixture",
+                "provider": "Local Git"
+            })
+
+    return {
+        "status": "success",
+        "count": len(repos),
+        "source_type": vcs_type,
+        "repos": repos
+    }
 
 @app.get("/api/sources")
 async def list_sources(db: Session = Depends(get_db)):

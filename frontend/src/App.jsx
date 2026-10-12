@@ -61,6 +61,12 @@ export default function App() {
     downloadCertificate,
     copyToClipboard,
     handleClearDatabase,
+    accountRepos,
+    setAccountRepos,
+    isFetchingAccountRepos,
+    handleFetchAccountRepos,
+    pipelineElapsedSeconds,
+    pipelineLiveStep,
     API_BASE
   } = useProvenanceRun(1);
 
@@ -127,6 +133,12 @@ export default function App() {
             onDownloadCertificate={downloadCertificate}
             copyFeedback={copyFeedback}
             onCopyText={copyToClipboard}
+            accountRepos={accountRepos}
+            setAccountRepos={setAccountRepos}
+            isFetchingAccountRepos={isFetchingAccountRepos}
+            onFetchAccountRepos={handleFetchAccountRepos}
+            pipelineElapsedSeconds={pipelineElapsedSeconds}
+            pipelineLiveStep={pipelineLiveStep}
             API_BASE={API_BASE}
           />
         )}
