@@ -35,8 +35,8 @@ export function useProvenanceRun(initialRunId = 1) {
 
   // Dynamic VCS source connection form states
   const [customVcsType, setCustomVcsType] = useState('svn');
-  const [customEndpoint, setCustomEndpoint] = useState('https://svn.code.sf.net/p/demo-svn-repo/svn');
-  const [customCreds, setCustomCreds] = useState('abhaypundora17:i@mdeveloperpro');
+  const [customEndpoint, setCustomEndpoint] = useState('');
+  const [customCreds, setCustomCreds] = useState('');
   const [customTargetOrg, setCustomTargetOrg] = useState('octathon-target');
 
   // Account repositories discovery states

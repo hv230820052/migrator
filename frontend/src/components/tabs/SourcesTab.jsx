@@ -42,7 +42,7 @@ export function SourcesTab({
             onClick={() => {
               setCustomVcsType('svn');
               setCustomEndpoint('https://svn.code.sf.net/p/demo-svn-repo/svn');
-              setCustomCreds('abhaypundora17:i@mdeveloperpro');
+              setCustomCreds('');
             }}
             className="btn-chip"
           >

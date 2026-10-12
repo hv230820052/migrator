@@ -38,7 +38,7 @@ const VCS_PRESETS = [
     name: 'Remote SVN (Live Demo)',
     type: 'svn',
     endpoint: 'https://svn.code.sf.net/p/demo-svn-repo/svn',
-    creds: 'abhaypundora17:i@mdeveloperpro',
+    creds: '',
     desc: 'Live SourceForge Subversion repository with branches & revisions'
   },
   {
@@ -138,8 +138,8 @@ export function MigrationTimelineTab({
   const [eventFilter, setEventFilter] = useState('ALL');
 
   // Dedicated SVN credential inputs for effortless credential-only flow
-  const initialUser = customCreds && customCreds.includes(':') ? customCreds.split(':')[0] : (customCreds || 'abhaypundora17');
-  const initialPass = customCreds && customCreds.includes(':') ? customCreds.split(':')[1] : 'i@mdeveloperpro';
+  const initialUser = customCreds && customCreds.includes(':') ? customCreds.split(':')[0] : (customCreds || '');
+  const initialPass = customCreds && customCreds.includes(':') ? customCreds.split(':')[1] : '';
   const [svnUsername, setSvnUsername] = useState(initialUser);
   const [svnPassword, setSvnPassword] = useState(initialPass);
   const [svnProvider, setSvnProvider] = useState('sourceforge');
@@ -322,7 +322,7 @@ export function MigrationTimelineTab({
                   type="text"
                   value={svnUsername}
                   onChange={(e) => handleUpdateSvnCreds(e.target.value, svnPassword)}
-                  placeholder="e.g. abhaypundora17"
+                  placeholder="Enter SVN username"
                   style={{
                     width: '100%',
                     padding: '0.6rem 0.85rem',
@@ -345,7 +345,7 @@ export function MigrationTimelineTab({
                     type={showCreds ? 'text' : 'password'}
                     value={svnPassword}
                     onChange={(e) => handleUpdateSvnCreds(svnUsername, e.target.value)}
-                    placeholder="e.g. i@mdeveloperpro"
+                    placeholder="Enter SVN password or token"
                     style={{
                       width: '100%',
                       padding: '0.6rem 2.5rem 0.6rem 0.85rem',
