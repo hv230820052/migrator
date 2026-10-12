@@ -67,6 +67,7 @@ class Repo(Base):
     source = relationship("Source", back_populates="repos")
     findings = relationship("Finding", back_populates="repo")
     mappings = relationship("Mapping", back_populates="repo")
+    tickets = relationship("TicketItem", backref="repo")
 
 class Finding(Base):
     __tablename__ = "findings"
@@ -130,3 +131,21 @@ class Approval(Base):
     decision = Column(String(20), nullable=False)  # approve, adjust, hold
     reason = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+class TicketItem(Base):
+    __tablename__ = "ticket_items"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    repo_id = Column(Integer, ForeignKey("repos.id"), nullable=False)
+    run_id = Column(Integer, nullable=True)
+    item_type = Column(String(50), default="ticket")  # ticket, merge_request
+    legacy_id = Column(String(100))  # e.g. "1" or "branch-feature-login"
+    title = Column(String(500))
+    description = Column(Text)
+    status = Column(String(50), default="open")  # open, closed, fixed, merged
+    author = Column(String(200))
+    created_at_str = Column(String(100))
+    github_url = Column(String(500))
+    github_number = Column(Integer)
+    manifest_link = Column(String(500))
+    details = Column(JSON)

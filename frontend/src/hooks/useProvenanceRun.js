@@ -137,6 +137,13 @@ export function useProvenanceRun(initialRunId = 1) {
     queryFn: () => fetchJson(`${API_BASE}/api/waves`),
   });
 
+  // TanStack Query: 12. Migrated SVN Tickets & Merge Requests (FR-08)
+  const { data: ticketsData = { total_items: 0, tickets_migrated: 0, merge_requests_migrated: 0, items: [] }, refetch: refetchTickets } = useQuery({
+    queryKey: ['tickets', runId, activeRepoId],
+    queryFn: () => fetchJson(`${API_BASE}/api/runs/${runId}/tickets?repo_id=${activeRepoId || ''}`).catch(() => ({ total_items: 0, tickets_migrated: 0, merge_requests_migrated: 0, items: [] })),
+    refetchInterval: (isAutoRunning || stageStatuses.executor === 'running' || stageStatuses.prover === 'running') ? 2000 : false,
+  });
+
   // WebSocket Connection for streaming real-time event logs
   useEffect(() => {
     const wsUrl = `${WS_BASE}/api/runs/${runId}/events`;
@@ -156,8 +163,13 @@ export function useProvenanceRun(initialRunId = 1) {
         if (data.tier) {
           queryClient.invalidateQueries({ queryKey: ['cascadeStats', runId] });
         }
-        if (data.action && data.action.toLowerCase().includes('gate')) {
+        if (data.action && (data.action.toLowerCase().includes('gate'))) {
           queryClient.invalidateQueries({ queryKey: ['gates', runId] });
+        }
+        if (data.action && (data.action.toLowerCase().includes('ticket') || data.action.toLowerCase().includes('migration') || data.action.toLowerCase().includes('mr') || data.action.toLowerCase().includes('pushed'))) {
+          queryClient.invalidateQueries({ queryKey: ['tickets'] });
+          queryClient.invalidateQueries({ queryKey: ['fidelity', runId] });
+          queryClient.invalidateQueries({ queryKey: ['certificate', runId] });
         }
       } catch (e) {
         console.warn('WS Parse error:', e);
@@ -708,6 +720,8 @@ export function useProvenanceRun(initialRunId = 1) {
     isFetchingAccountRepos,
     handleFetchAccountRepos,
     pipelineElapsedSeconds,
-    pipelineLiveStep
+    pipelineLiveStep,
+    ticketsData,
+    refetchTickets
   };
 }

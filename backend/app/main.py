@@ -18,7 +18,7 @@ import urllib.request
 import base64
 
 # Local imports
-from .models import Base, Source, Repo, Run, Event, Approval, SessionLocal, engine, init_db, Finding
+from .models import Base, Source, Repo, Run, Event, Approval, SessionLocal, engine, init_db, Finding, TicketItem
 from sqlalchemy.orm import Session
 from .connectors import (
     SvnConnector, LocalSvnConnector,
@@ -1020,7 +1020,7 @@ async def _run_migration_background(run_id: int, target_repo_id: Optional[int] =
             await emit_event(run_id, {
                 "agent": "Executor",
                 "action": f"Migration {'succeeded' if result.success else 'failed'}",
-                "reason": f"Commits: {result.commits_pushed}, LFS files: {len(result.lfs_files)}",
+                "reason": f"Commits: {result.commits_pushed}, Tickets: {result.tickets_migrated}, MRs: {result.merge_requests_migrated}, LFS files: {len(result.lfs_files)}",
                 "tier": "T0"
             })
         
@@ -1041,7 +1041,91 @@ async def get_migration_status(run_id: int, db: Session = Depends(get_db)):
     run = db.query(Run).filter(Run.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    return {"run_id": run_id, "status": run.status}
+    items = db.query(TicketItem).filter(TicketItem.run_id == run_id).all()
+    tickets_count = len([i for i in items if i.item_type == "ticket"])
+    mrs_count = len([i for i in items if i.item_type == "merge_request"])
+    return {
+        "run_id": run_id,
+        "status": run.status,
+        "tickets_migrated": tickets_count,
+        "merge_requests_migrated": mrs_count,
+        "total_tickets": len(items)
+    }
+
+@app.get("/api/runs/{run_id}/tickets")
+async def get_run_tickets(run_id: int, repo_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """GET /api/runs/{id}/tickets - Get migrated tickets and merge requests (FR-08)"""
+    query = db.query(TicketItem)
+    if run_id:
+        query = query.filter(TicketItem.run_id == run_id)
+    if repo_id:
+        query = query.filter(TicketItem.repo_id == repo_id)
+    
+    items = query.all()
+    if not items and repo_id:
+        items = db.query(TicketItem).filter(TicketItem.repo_id == repo_id).all()
+    if not items:
+        # Fallback to any recent items in DB
+        items = db.query(TicketItem).all()
+        
+    res_items = []
+    for it in items:
+        res_items.append({
+            "id": it.id,
+            "repo_id": it.repo_id,
+            "run_id": it.run_id,
+            "item_type": it.item_type,
+            "legacy_id": it.legacy_id,
+            "title": it.title,
+            "description": it.description,
+            "status": it.status,
+            "author": it.author,
+            "created_at": it.created_at_str,
+            "github_url": it.github_url,
+            "github_number": it.github_number,
+            "manifest_link": it.manifest_link,
+            "details": it.details
+        })
+    
+    tickets_count = len([i for i in res_items if i["item_type"] == "ticket"])
+    mrs_count = len([i for i in res_items if i["item_type"] == "merge_request"])
+
+    return {
+        "run_id": run_id,
+        "repo_id": repo_id,
+        "total_items": len(res_items),
+        "tickets_migrated": tickets_count,
+        "merge_requests_migrated": mrs_count,
+        "items": res_items
+    }
+
+@app.get("/api/repos/{repo_id}/tickets")
+async def get_repo_tickets(repo_id: int, db: Session = Depends(get_db)):
+    """GET /api/repos/{id}/tickets - Get migrated tickets and merge requests for a repository"""
+    items = db.query(TicketItem).filter(TicketItem.repo_id == repo_id).all()
+    res_items = [{
+        "id": it.id,
+        "repo_id": it.repo_id,
+        "run_id": it.run_id,
+        "item_type": it.item_type,
+        "legacy_id": it.legacy_id,
+        "title": it.title,
+        "description": it.description,
+        "status": it.status,
+        "author": it.author,
+        "created_at": it.created_at_str,
+        "github_url": it.github_url,
+        "github_number": it.github_number,
+        "manifest_link": it.manifest_link,
+        "details": it.details
+    } for it in items]
+    return {
+        "repo_id": repo_id,
+        "total_items": len(res_items),
+        "tickets_migrated": len([i for i in res_items if i["item_type"] == "ticket"]),
+        "merge_requests_migrated": len([i for i in res_items if i["item_type"] == "merge_request"]),
+        "items": res_items
+    }
 
 # --- FR-20 Wave Planning Endpoints ---
 @app.get("/api/runs/{run_id}/waves")

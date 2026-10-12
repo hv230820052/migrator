@@ -67,6 +67,7 @@ export default function App() {
     handleFetchAccountRepos,
     pipelineElapsedSeconds,
     pipelineLiveStep,
+    ticketsData,
     API_BASE
   } = useProvenanceRun(1);
 
@@ -139,6 +140,7 @@ export default function App() {
             onFetchAccountRepos={handleFetchAccountRepos}
             pipelineElapsedSeconds={pipelineElapsedSeconds}
             pipelineLiveStep={pipelineLiveStep}
+            ticketsData={ticketsData}
             API_BASE={API_BASE}
           />
         )}
