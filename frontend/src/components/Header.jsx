@@ -13,56 +13,17 @@ export function Header({
   onClearDatabase
 }) {
   return (
-    <>
-      {/* UX4G Standard Top National Accessibility & Government Banner */}
-      <div className="ux4g-gov-banner">
-        <div className="ux4g-gov-badge">
-          <span style={{ color: 'var(--brand-saffron)', fontWeight: 800, fontSize: '0.85rem' }}>॥</span>
-          <span>Digital Public Infrastructure | Government of India</span>
-          <span style={{ color: 'var(--text-tertiary)', margin: '0 0.35rem' }}>•</span>
-          <span style={{ color: 'var(--brand-primary)', fontWeight: 700 }}>UX4G 3.0 Standard</span>
-        </div>
-
-        <div className="ux4g-access-tools">
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>Text Resize:</span>
-          <button
-            type="button"
-            className="ux4g-font-btn"
-            title="Decrease Font Size"
-            onClick={() => { document.documentElement.style.fontSize = '92%'; }}
-          >
-            A-
-          </button>
-          <button
-            type="button"
-            className="ux4g-font-btn"
-            title="Default Font Size"
-            onClick={() => { document.documentElement.style.fontSize = '100%'; }}
-          >
-            A
-          </button>
-          <button
-            type="button"
-            className="ux4g-font-btn"
-            title="Increase Font Size"
-            onClick={() => { document.documentElement.style.fontSize = '108%'; }}
-          >
-            A+
-          </button>
-        </div>
-      </div>
-
-      <header style={{
-        backgroundColor: 'var(--surface-primary)',
-        borderBottom: '1px solid var(--border-subtle)',
-        padding: '0.95rem 2.25rem',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        position: 'sticky',
-        top: 0,
-        zIndex: 50
-      }}>
+    <header style={{
+      backgroundColor: 'var(--surface-primary)',
+      borderBottom: '1px solid var(--border-subtle)',
+      padding: '0.95rem 2.25rem',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      position: 'sticky',
+      top: 0,
+      zIndex: 50
+    }}>
         {/* Brand & Connection State */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
@@ -181,8 +142,7 @@ export function Header({
           )}
         </button>
       </div>
-      </header>
-    </>
+    </header>
   );
 }
 

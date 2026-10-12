@@ -213,52 +213,6 @@ body {
   outline-offset: -2px;
 }
 
-/* UX4G Top National Accessibility & Government Banner */
-.ux4g-gov-banner {
-  background-color: #f8f9fa;
-  border-bottom: 1px solid #e5e5e5;
-  padding: 0.35rem 2.25rem;
-  font-size: 0.74rem;
-  color: var(--text-secondary);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.ux4g-gov-badge {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.ux4g-access-tools {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.ux4g-font-btn {
-  background: #ffffff;
-  border: 1px solid #d4d4d4;
-  border-radius: 3px;
-  padding: 0.1rem 0.45rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.1s ease;
-}
-
-.ux4g-font-btn:hover {
-  background: #ffffff;
-  color: var(--brand-primary);
-  border-color: var(--brand-primary);
-}
-
 /* UX4G Button Styles */
 .btn {
   display: inline-flex;
