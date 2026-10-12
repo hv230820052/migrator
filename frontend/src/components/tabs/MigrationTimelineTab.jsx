@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import {
   Network,
@@ -32,7 +32,8 @@ import {
   FolderGit2,
   GitPullRequest,
   Tag,
-  FileText
+  FileText,
+  Info
 } from 'lucide-react';
 
 const VCS_PRESETS = [
@@ -151,7 +152,210 @@ export function MigrationTimelineTab({
   const [showManualEndpoint, setShowManualEndpoint] = useState(false);
   const [hasFetchedRepos, setHasFetchedRepos] = useState(false);
 
+  // Contributor / Author Mapping State (Requirement 1, 2, 3)
+  const [authorRows, setAuthorRows] = useState([]);
+  const [authorWarnings, setAuthorWarnings] = useState([]);
+  const [allMapped, setAllMapped] = useState(true);
+  const [unmappedAuthors, setUnmappedAuthors] = useState([]);
+  const [isFetchingAuthors, setIsFetchingAuthors] = useState(false);
+  const [isSavingAuthors, setIsSavingAuthors] = useState(false);
+  const [authorFeedback, setAuthorFeedback] = useState(null);
+  const [noreplyLoading, setNoreplyLoading] = useState({});
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportText, setExportText] = useState('');
+  const [verificationData, setVerificationData] = useState(null);
+  const [isFetchingVerification, setIsFetchingVerification] = useState(false);
+
   const selectedRepo = catalog.find((r) => r.id === selectedRepoId) || catalog[0] || null;
+
+  // Fetch contributor verification data
+  const fetchVerificationData = async () => {
+    if (!selectedRepo?.id) return;
+    setIsFetchingVerification(true);
+    try {
+      const res = await fetch(`${API_BASE || 'http://localhost:8100'}/api/repos/${selectedRepo.id}/contributors-verification`);
+      if (res.ok) {
+        const data = await res.json();
+        setVerificationData(data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch contributor verification:', e);
+    } finally {
+      setIsFetchingVerification(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchVerificationData();
+  }, [selectedRepo?.id, API_BASE, stageStatuses?.executor]);
+
+  // Fetch author mapping when selectedRepo changes
+  useEffect(() => {
+    if (!selectedRepo?.id) return;
+    let isMounted = true;
+    const fetchAuthors = async () => {
+      setIsFetchingAuthors(true);
+      try {
+        const res = await fetch(`${API_BASE || 'http://localhost:8100'}/api/repos/${selectedRepo.id}/authors`);
+        if (res.ok && isMounted) {
+          const data = await res.json();
+          setAuthorRows(data.authors || []);
+          setAuthorWarnings(data.warnings || []);
+          setAllMapped(data.all_mapped ?? true);
+          setUnmappedAuthors(data.unmapped_authors || []);
+        }
+      } catch (err) {
+        console.error('Failed to load authors:', err);
+      } finally {
+        if (isMounted) setIsFetchingAuthors(false);
+      }
+    };
+    fetchAuthors();
+    return () => { isMounted = false; };
+  }, [selectedRepo?.id, API_BASE]);
+
+  const handleAuthorFieldChange = (index, field, value) => {
+    setAuthorRows((prev) => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [field]: value };
+      return updated;
+    });
+  };
+
+  const handleLookupNoreply = async (index, username, ghUsername) => {
+    const target = (ghUsername || username || '').trim();
+    if (!target) return;
+    setNoreplyLoading((prev) => ({ ...prev, [username]: true }));
+    setAuthorFeedback(null);
+    try {
+      const res = await fetch(`${API_BASE || 'http://localhost:8100'}/api/github/user/${target}/noreply`);
+      if (res.ok) {
+        const data = await res.json();
+        setAuthorRows((prev) => {
+          const updated = [...prev];
+          updated[index] = {
+            ...updated[index],
+            email: data.noreply_email,
+            github_username: data.username,
+            name: updated[index].name || data.name || data.username
+          };
+          return updated;
+        });
+        setAuthorFeedback({
+          type: 'success',
+          message: `Linked @${data.username} noreply address: ${data.noreply_email}`
+        });
+      } else {
+        const err = await res.json();
+        setAuthorFeedback({
+          type: 'error',
+          message: err.detail || `GitHub user @${target} not found.`
+        });
+      }
+    } catch (e) {
+      setAuthorFeedback({ type: 'error', message: `Lookup error: ${e.message}` });
+    } finally {
+      setNoreplyLoading((prev) => ({ ...prev, [username]: false }));
+    }
+  };
+
+  const handleSaveAllAuthors = async () => {
+    if (!selectedRepo?.id) return;
+    setIsSavingAuthors(true);
+    setAuthorFeedback(null);
+    try {
+      const payload = {
+        mappings: authorRows.map((a) => ({
+          username: a.username,
+          name: a.name || a.username,
+          email: a.email || '',
+          github_username: a.github_username || ''
+        }))
+      };
+      const res = await fetch(`${API_BASE || 'http://localhost:8100'}/api/repos/${selectedRepo.id}/authors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to save author mappings');
+      }
+      setAuthorWarnings(data.warnings || []);
+      setAllMapped(data.all_mapped ?? true);
+      setUnmappedAuthors(data.unmapped_authors || []);
+      setAuthorFeedback({
+        type: data.all_mapped ? 'success' : 'warning',
+        message: data.all_mapped
+          ? `All ${data.count} contributors verified and saved successfully!`
+          : `Saved. Note: ${data.unmapped_authors?.length || 0} author(s) still unmapped.`
+      });
+      const ref = await fetch(`${API_BASE || 'http://localhost:8100'}/api/repos/${selectedRepo.id}/authors`);
+      if (ref.ok) {
+        const refData = await ref.json();
+        setAuthorRows(refData.authors || []);
+      }
+    } catch (err) {
+      setAuthorFeedback({ type: 'error', message: err.message });
+    } finally {
+      setIsSavingAuthors(false);
+    }
+  };
+
+  const handleExportAuthors = async () => {
+    if (!selectedRepo?.id) return;
+    try {
+      const res = await fetch(`${API_BASE || 'http://localhost:8100'}/api/repos/${selectedRepo.id}/authors/export`);
+      if (res.ok) {
+        const text = await res.text();
+        setExportText(text);
+        setIsExportModalOpen(true);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleImportAuthors = async () => {
+    if (!importText.trim()) return;
+    try {
+      const res = await fetch(`${API_BASE || 'http://localhost:8100'}/api/authors/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: importText })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const mapByU = {};
+        (data.mappings || []).forEach((m) => {
+          mapByU[m.username] = m;
+        });
+        setAuthorRows((prev) =>
+          prev.map((r) => {
+            if (mapByU[r.username]) {
+              return {
+                ...r,
+                name: mapByU[r.username].name || r.name,
+                email: mapByU[r.username].email || r.email,
+                github_username: mapByU[r.username].github_username || r.github_username
+              };
+            }
+            return r;
+          })
+        );
+        setIsImportModalOpen(false);
+        setImportText('');
+        setAuthorFeedback({
+          type: 'success',
+          message: `Imported ${data.count} mapping entries. Remember to click "Save Contributor Mappings" to persist.`
+        });
+      }
+    } catch (err) {
+      setAuthorFeedback({ type: 'error', message: `Import failed: ${err.message}` });
+    }
+  };
 
   const handleUpdateSvnCreds = (newU, newP) => {
     setSvnUsername(newU);
@@ -221,6 +425,241 @@ export function MigrationTimelineTab({
     if (eventFilter === 'ALL') return true;
     return ev.agent && ev.agent.toLowerCase().includes(eventFilter.toLowerCase());
   });
+
+  const renderContributorMappingTable = (isInsideStage = false) => (
+    <div className={isInsideStage ? '' : 'panel'} id={isInsideStage ? undefined : 'map-contributors-section'}>
+      <div className={isInsideStage ? '' : 'panel-header'} style={isInsideStage ? { marginBottom: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' } : undefined}>
+        <div className={isInsideStage ? '' : 'panel-title'} style={isInsideStage ? { fontSize: '1.05rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.5rem' } : undefined}>
+          <Users style={{ width: '18px', height: '18px', color: 'var(--brand-primary)' }} />
+          <span>{isInsideStage ? 'Stage 4: Map Contributors & Identity Attribution' : `Step 2.5: Map Contributors (${authorRows.length} Discovered Authors)`}</span>
+        </div>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={() => setIsImportModalOpen(true)}
+            className="btn btn-secondary"
+            style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+          >
+            <Download style={{ width: '13px', height: '13px' }} />
+            <span>Import authors.txt</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleExportAuthors}
+            className="btn btn-secondary"
+            style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+          >
+            <FileText style={{ width: '13px', height: '13px' }} />
+            <span>Export authors.txt</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleSaveAllAuthors}
+            disabled={isSavingAuthors || isFetchingAuthors}
+            className="btn btn-primary"
+            style={{ fontSize: '0.75rem', padding: '0.35rem 0.85rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+          >
+            {isSavingAuthors ? (
+              <RotateCw style={{ width: '13px', height: '13px', animation: 'spin 1s linear infinite' }} />
+            ) : (
+              <CheckCircle2 style={{ width: '13px', height: '13px' }} />
+            )}
+            <span>{isSavingAuthors ? 'Saving...' : 'Save Contributor Mappings'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Short Hint per Requirement 3 */}
+      <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 'var(--radius-sm)', padding: '0.75rem 1rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.82rem', color: '#334155' }}>
+        <Sparkles style={{ width: '16px', height: '16px', color: '#0284c7', flexShrink: 0 }} />
+        <div>
+          <strong>Attribution Hint:</strong> Use the email verified on the person&apos;s GitHub account or their official noreply address, otherwise commits won&apos;t be linked to their profile.
+        </div>
+      </div>
+
+      {/* Feedback Message */}
+      {authorFeedback && (
+        <div
+          style={{
+            padding: '0.75rem 1rem',
+            borderRadius: 'var(--radius-sm)',
+            marginBottom: '1rem',
+            fontSize: '0.82rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: authorFeedback.type === 'error' ? '#fff1f2' : authorFeedback.type === 'warning' ? '#fffbeb' : '#f0fdf4',
+            color: authorFeedback.type === 'error' ? '#9f1239' : authorFeedback.type === 'warning' ? '#92400e' : '#166534',
+            border: `1px solid ${authorFeedback.type === 'error' ? '#fecdd3' : authorFeedback.type === 'warning' ? '#fde68a' : '#bbf7d0'}`
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {authorFeedback.type === 'error' ? <AlertCircle style={{ width: '15px', height: '15px' }} /> : <CheckCircle2 style={{ width: '15px', height: '15px' }} />}
+            <span>{authorFeedback.message}</span>
+          </div>
+          <button
+            onClick={() => setAuthorFeedback(null)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.85rem', color: 'inherit' }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Warning Banner (Duplicate emails or unverifiable domains) */}
+      {authorWarnings.length > 0 && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 'var(--radius-sm)', padding: '0.85rem 1.15rem', marginBottom: '1.25rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#92400e', fontWeight: 700, fontSize: '0.85rem', marginBottom: '0.35rem' }}>
+            <AlertTriangle style={{ width: '16px', height: '16px' }} />
+            <span>Contributor Attribution Warnings (Non-Blocking)</span>
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '1.25rem', fontSize: '0.78rem', color: '#78350f', lineHeight: 1.5 }}>
+            {authorWarnings.map((w, idx) => (
+              <li key={idx}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Blocking Incomplete Mapping Banner */}
+      {!allMapped && unmappedAuthors.length > 0 && (
+        <div style={{ background: '#fff1f2', border: '1px solid #fecdd3', borderRadius: 'var(--radius-sm)', padding: '0.85rem 1.15rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <AlertCircle style={{ width: '20px', height: '20px', color: '#e11d48', flexShrink: 0 }} />
+          <div>
+            <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#9f1239' }}>
+              Migration Blocked: Incomplete Contributor Mapping
+            </div>
+            <div style={{ fontSize: '0.78rem', color: '#be123c', marginTop: '0.2rem' }}>
+              The following authors must be mapped before execution can run: <strong>{unmappedAuthors.join(', ')}</strong>.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Author Table */}
+      {isFetchingAuthors ? (
+        <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.6rem' }}>
+          <RotateCw style={{ width: '18px', height: '18px', animation: 'spin 1s linear infinite' }} />
+          <span>Discovering unique authors from repository history...</span>
+        </div>
+      ) : authorRows.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '2rem', background: 'var(--canvas-bg)', borderRadius: 'var(--radius-sm)', border: '1px dashed var(--border-subtle)', color: 'var(--text-tertiary)', fontSize: '0.84rem' }}>
+          No authors discovered in the active repository yet.
+        </div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+            <thead>
+              <tr style={{ background: 'var(--canvas-bg)', textAlign: 'left', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border-subtle)' }}>
+                <th style={{ padding: '0.6rem 0.75rem' }}>SVN USERNAME</th>
+                <th style={{ padding: '0.6rem 0.75rem' }}>COMMITS</th>
+                <th style={{ padding: '0.6rem 0.75rem' }}>NAME</th>
+                <th style={{ padding: '0.6rem 0.75rem' }}>EMAIL (REQUIRED)</th>
+                <th style={{ padding: '0.6rem 0.75rem' }}>OPTIONAL GITHUB USERNAME</th>
+                <th style={{ padding: '0.6rem 0.75rem' }}>ACTIONS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {authorRows.map((row, idx) => {
+                const hasEmail = !!(row.email && row.email.trim());
+                const isLoadingNoreply = !!noreplyLoading[row.username];
+                return (
+                  <tr key={row.username || idx} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <td style={{ padding: '0.65rem 0.75rem', fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--text-primary)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                        <span>{row.username}</span>
+                        <span className={`badge ${hasEmail ? 'badge-connected' : 'badge-danger'}`} style={{ fontSize: '0.62rem', padding: '0.12rem 0.4rem' }}>
+                          {hasEmail ? 'MAPPED' : 'UNMAPPED'}
+                        </span>
+                      </div>
+                    </td>
+                    <td style={{ padding: '0.65rem 0.75rem' }}>
+                      <span className="badge badge-t0" style={{ fontWeight: 600 }}>
+                        {row.commits || 0} commits
+                      </span>
+                    </td>
+                    <td style={{ padding: '0.65rem 0.75rem' }}>
+                      <input
+                        type="text"
+                        value={row.name || ''}
+                        onChange={(e) => handleAuthorFieldChange(idx, 'name', e.target.value)}
+                        placeholder={row.username}
+                        style={{
+                          width: '100%',
+                          minWidth: '130px',
+                          padding: '0.4rem 0.6rem',
+                          borderRadius: 'var(--radius-sm)',
+                          border: '1px solid var(--border-subtle)',
+                          background: 'var(--surface-primary)',
+                          fontSize: '0.8rem',
+                          color: 'var(--text-primary)'
+                        }}
+                      />
+                    </td>
+                    <td style={{ padding: '0.65rem 0.75rem' }}>
+                      <input
+                        type="email"
+                        value={row.email || ''}
+                        onChange={(e) => handleAuthorFieldChange(idx, 'email', e.target.value)}
+                        placeholder="e.g. name@company.com"
+                        style={{
+                          width: '100%',
+                          minWidth: '220px',
+                          padding: '0.4rem 0.6rem',
+                          borderRadius: 'var(--radius-sm)',
+                          border: hasEmail ? '1px solid var(--border-subtle)' : '1px solid #f43f5e',
+                          background: hasEmail ? 'var(--surface-primary)' : '#fff1f2',
+                          fontSize: '0.8rem',
+                          color: 'var(--text-primary)',
+                          fontFamily: 'var(--font-mono)'
+                        }}
+                      />
+                    </td>
+                    <td style={{ padding: '0.65rem 0.75rem' }}>
+                      <input
+                        type="text"
+                        value={row.github_username || ''}
+                        onChange={(e) => handleAuthorFieldChange(idx, 'github_username', e.target.value)}
+                        placeholder="e.g. octocat"
+                        style={{
+                          width: '100%',
+                          minWidth: '140px',
+                          padding: '0.4rem 0.6rem',
+                          borderRadius: 'var(--radius-sm)',
+                          border: '1px solid var(--border-subtle)',
+                          background: 'var(--surface-primary)',
+                          fontSize: '0.8rem',
+                          color: 'var(--text-primary)',
+                          fontFamily: 'var(--font-mono)'
+                        }}
+                      />
+                    </td>
+                    <td style={{ padding: '0.65rem 0.75rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => handleLookupNoreply(idx, row.username, row.github_username)}
+                        disabled={isLoadingNoreply}
+                        className="btn btn-secondary"
+                        style={{ padding: '0.35rem 0.65rem', fontSize: '0.72rem', display: 'inline-flex', alignItems: 'center', gap: '0.35rem', whiteSpace: 'nowrap' }}
+                        title="Fetch official GitHub noreply email address"
+                      >
+                        {isLoadingNoreply ? (
+                          <RotateCw style={{ width: '12px', height: '12px', animation: 'spin 1s linear infinite' }} />
+                        ) : (
+                          <Users style={{ width: '12px', height: '12px' }} />
+                        )}
+                        <span>Lookup Noreply</span>
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
@@ -779,6 +1218,9 @@ export function MigrationTimelineTab({
         )}
       </div>
 
+      {/* SECTION 2.5: Map Contributors (Step between Select Repository and Execute) */}
+      {renderContributorMappingTable(false)}
+
       {/* SECTION 3: The Live Migration Timeline Stepper */}
       <div className="panel">
         <div className="panel-header">
@@ -788,10 +1230,20 @@ export function MigrationTimelineTab({
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
             <button
-              onClick={() => onRunFullPipeline(selectedRepo?.id)}
-              disabled={!selectedRepo || isAutoRunning || !!loadingAction}
+              onClick={() => {
+                if (!allMapped) {
+                  setAuthorFeedback({
+                    type: 'error',
+                    message: `Migration blocked: All authors (${unmappedAuthors.join(', ')}) must be mapped to valid emails before executing.`
+                  });
+                  return;
+                }
+                onRunFullPipeline(selectedRepo?.id);
+              }}
+              disabled={!selectedRepo || isAutoRunning || !!loadingAction || !allMapped}
               className="btn btn-primary"
-              style={{ padding: '0.45rem 0.95rem', fontSize: '0.78rem' }}
+              style={{ padding: '0.45rem 0.95rem', fontSize: '0.78rem', opacity: !allMapped ? 0.6 : 1 }}
+              title={!allMapped ? 'Migration blocked until all authors are mapped' : 'Run entire pipeline'}
             >
               <Play style={{ width: '13px', height: '13px' }} />
               <span>Auto-Run Pipeline</span>
@@ -1156,90 +1608,10 @@ export function MigrationTimelineTab({
               </div>
             )}
 
-            {/* 4. Cartographer Inspector */}
+            {/* 4. Cartographer Inspector - Map Contributors */}
             {activeInspectorStage === 'cartographer' && (
               <div>
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Users style={{ width: '16px', height: '16px' }} />
-                  <span>Stage 4: Cartographer Identity Mapping (Inline Overrides)</span>
-                </h3>
-                <p style={{ fontSize: '0.82rem', color: 'var(--text-tertiary)', marginBottom: '1.25rem' }}>
-                  Commit author identities mapped via T0 exact directory match. Edit any row to save a human override directly.
-                </p>
-
-                {mappings.length === 0 ? (
-                  <div style={{ fontSize: '0.82rem', color: 'var(--text-tertiary)' }}>No authors indexed for this repository yet.</div>
-                ) : (
-                  <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem' }}>
-                      <thead>
-                        <tr style={{ borderBottom: '1px solid var(--border-subtle)', textAlign: 'left', color: 'var(--text-tertiary)' }}>
-                          <th style={{ padding: '0.5rem' }}>Legacy ID</th>
-                          <th style={{ padding: '0.5rem' }}>Proposed GitHub User</th>
-                          <th style={{ padding: '0.5rem' }}>Proposed Email</th>
-                          <th style={{ padding: '0.5rem' }}>Confidence</th>
-                          <th style={{ padding: '0.5rem' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {mappings.map((m) => {
-                          const isEditing = editingMapping === m.legacy_id;
-                          return (
-                            <tr key={m.legacy_id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                              <td style={{ padding: '0.5rem', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{m.legacy_id}</td>
-                              <td style={{ padding: '0.5rem' }}>
-                                {isEditing ? (
-                                  <input
-                                    type="text"
-                                    value={editLogin}
-                                    onChange={(e) => setEditLogin(e.target.value)}
-                                    style={{ padding: '0.25rem 0.5rem', fontSize: '0.78rem', borderRadius: '4px', border: '1px solid var(--border-subtle)' }}
-                                  />
-                                ) : (
-                                  <span style={{ fontFamily: 'var(--font-mono)' }}>@{m.proposed_login}</span>
-                                )}
-                              </td>
-                              <td style={{ padding: '0.5rem' }}>
-                                {isEditing ? (
-                                  <input
-                                    type="text"
-                                    value={editEmail}
-                                    onChange={(e) => setEditEmail(e.target.value)}
-                                    style={{ padding: '0.25rem 0.5rem', fontSize: '0.78rem', borderRadius: '4px', border: '1px solid var(--border-subtle)' }}
-                                  />
-                                ) : (
-                                  <span style={{ color: 'var(--text-secondary)' }}>{m.proposed_email}</span>
-                                )}
-                              </td>
-                              <td style={{ padding: '0.5rem' }}>
-                                <span className="badge badge-connected">{Math.round((m.confidence || 1) * 100)}%</span>
-                              </td>
-                              <td style={{ padding: '0.5rem' }}>
-                                {isEditing ? (
-                                  <button
-                                    onClick={() => handleSaveMapping(selectedRepo?.id, m.legacy_id)}
-                                    className="btn btn-primary"
-                                    style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem' }}
-                                  >
-                                    Save Override
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={() => handleStartEditing(m)}
-                                    className="btn btn-secondary"
-                                    style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem' }}
-                                  >
-                                    Edit
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                {renderContributorMappingTable(true)}
               </div>
             )}
 
@@ -1442,6 +1814,105 @@ export function MigrationTimelineTab({
                     </div>
                   )}
                 </div>
+
+                {/* Dedicated Post-Migration Contributor & Author Verification Panel (Requirement 6) */}
+                <div style={{ marginTop: '1.25rem', padding: '1.15rem', background: 'var(--surface-primary)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <Users style={{ width: '16px', height: '16px', color: 'var(--brand-primary)' }} />
+                      <div style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                        Post-Migration Contributor &amp; Author Verification (Requirement 6)
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={fetchVerificationData}
+                      disabled={isFetchingVerification}
+                      className="btn btn-secondary"
+                      style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                    >
+                      <RotateCw style={{ width: '11px', height: '11px', animation: isFetchingVerification ? 'spin 1s linear infinite' : 'none' }} />
+                      <span>Refresh Contributors</span>
+                    </button>
+                  </div>
+
+                  {/* Summary Dual Cards Grid */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+                    {/* Pre-Push Git Author Audit */}
+                    <div style={{ background: 'var(--canvas-bg)', padding: '0.85rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                          1. PRE-PUSH GIT LOG AUDIT (<code>git log --format=&quot;%an &lt;%ae&gt;&quot;</code>)
+                        </span>
+                        <span className="badge badge-connected" style={{ fontSize: '0.65rem' }}>
+                          {verificationData?.pre_push_authors?.length || 0} Authors
+                        </span>
+                      </div>
+                      {(!verificationData?.pre_push_authors || verificationData.pre_push_authors.length === 0) ? (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', padding: '0.5rem 0' }}>
+                          Awaiting conversion execution to run git log author audit...
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                          {verificationData.pre_push_authors.map((auth, idx) => (
+                            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', padding: '0.35rem 0.5rem', background: 'var(--surface-primary)', borderRadius: '4px', border: '1px solid var(--border-subtle)' }}>
+                              <div>
+                                <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)' }}>{auth.author}</span>
+                                <span style={{ marginLeft: '0.5rem', color: 'var(--text-tertiary)' }}>({auth.commits} commits)</span>
+                              </div>
+                              <span className={`badge ${auth.is_linked ? 'badge-connected' : 'badge-t3'}`} style={{ fontSize: '0.62rem' }}>
+                                {auth.status || (auth.is_linked ? 'Linked' : 'Unlinked')}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Post-Push GitHub Contributors */}
+                    <div style={{ background: 'var(--canvas-bg)', padding: '0.85rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                          2. GITHUB CONTRIBUTORS API (<code>GET /repos/&#123;owner&#125;/&#123;repo&#125;/contributors</code>)
+                        </span>
+                        <span className="badge badge-t0" style={{ fontSize: '0.65rem' }}>
+                          Default: {verificationData?.default_branch || 'main'}
+                        </span>
+                      </div>
+                      {(!verificationData?.github_contributors || verificationData.github_contributors.length === 0) ? (
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', padding: '0.5rem 0' }}>
+                          Contributors graph updating. GitHub calculates contributions asynchronously for commits on default branch (<code>main</code>).
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                          {verificationData.github_contributors.map((c, idx) => (
+                            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', padding: '0.35rem 0.5rem', background: 'var(--surface-primary)', borderRadius: '4px', border: '1px solid var(--border-subtle)' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                {c.avatar_url && (
+                                  <img src={c.avatar_url} alt={c.login} style={{ width: '18px', height: '18px', borderRadius: '50%' }} />
+                                )}
+                                <a href={c.html_url} target="_blank" rel="noopener noreferrer" style={{ fontWeight: 600, color: 'var(--brand-primary)', textDecoration: 'none' }}>
+                                  @{c.login}
+                                </a>
+                              </div>
+                              <span className="badge badge-connected" style={{ fontSize: '0.62rem' }}>
+                                {c.contributions} contributions
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Informational Guidance Note per Req 6 */}
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', background: 'var(--surface-secondary)', padding: '0.6rem 0.85rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Info style={{ width: '14px', height: '14px', color: 'var(--brand-primary)', flexShrink: 0 }} />
+                    <div>
+                      {verificationData?.note || 'Note: GitHub may take a few minutes to recalculate the Insights -> Contributors graph. Only commits on the default branch count as contributions.'}
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1584,6 +2055,177 @@ export function MigrationTimelineTab({
           </div>
         </div>
       </div>
+
+      {/* Import authors.txt Modal (Req 3) */}
+      {isImportModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(15, 23, 42, 0.65)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          backdropFilter: 'blur(3px)'
+        }}>
+          <div style={{
+            background: 'var(--surface-primary)',
+            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--border-subtle)',
+            padding: '1.5rem',
+            width: '90%',
+            maxWidth: '560px',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <Download style={{ width: '16px', height: '16px', color: 'var(--brand-primary)' }} />
+                <span>Import authors.txt File</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsImportModalOpen(false)}
+                style={{ background: 'none', border: 'none', fontSize: '1.1rem', cursor: 'pointer', color: 'var(--text-tertiary)' }}
+              >
+                ✕
+              </button>
+            </div>
+            <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.85rem' }}>
+              Paste standard git-svn authors format (one entry per line: <code>username = Full Name &lt;email@example.com&gt;</code>).
+            </p>
+            <textarea
+              value={importText}
+              onChange={(e) => setImportText(e.target.value)}
+              placeholder="abhaypundora17 = Abhay Pundora <abhaypundora17@gmail.com>&#10;abhaypundora = Abhay Pundora <abhaypundora@gmail.com>"
+              rows={8}
+              style={{
+                width: '100%',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '0.78rem',
+                padding: '0.65rem',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-subtle)',
+                background: 'var(--canvas-bg)',
+                color: 'var(--text-primary)',
+                resize: 'vertical',
+                marginBottom: '1rem'
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+              <button
+                type="button"
+                onClick={() => setIsImportModalOpen(false)}
+                className="btn btn-secondary"
+                style={{ fontSize: '0.8rem', padding: '0.4rem 0.85rem' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleImportAuthors}
+                disabled={!importText.trim()}
+                className="btn btn-primary"
+                style={{ fontSize: '0.8rem', padding: '0.4rem 1rem' }}
+              >
+                Import &amp; Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Export authors.txt Modal (Req 3) */}
+      {isExportModalOpen && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(15, 23, 42, 0.65)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          backdropFilter: 'blur(3px)'
+        }}>
+          <div style={{
+            background: 'var(--surface-primary)',
+            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--border-subtle)',
+            padding: '1.5rem',
+            width: '90%',
+            maxWidth: '560px',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+              <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <FileText style={{ width: '16px', height: '16px', color: 'var(--brand-primary)' }} />
+                <span>Export authors.txt Mapping</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsExportModalOpen(false)}
+                style={{ background: 'none', border: 'none', fontSize: '1.1rem', cursor: 'pointer', color: 'var(--text-tertiary)' }}
+              >
+                ✕
+              </button>
+            </div>
+            <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.85rem' }}>
+              Standard git-svn format generated from confirmed author mappings:
+            </p>
+            <textarea
+              readOnly
+              value={exportText}
+              rows={8}
+              style={{
+                width: '100%',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '0.78rem',
+                padding: '0.65rem',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-subtle)',
+                background: 'var(--canvas-bg)',
+                color: 'var(--text-primary)',
+                resize: 'vertical',
+                marginBottom: '1rem'
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(exportText);
+                  if (onCopyText) onCopyText(exportText);
+                }}
+                className="btn btn-secondary"
+                style={{ fontSize: '0.8rem', padding: '0.4rem 0.85rem' }}
+              >
+                Copy to Clipboard
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const blob = new Blob([exportText], { type: 'text/plain;charset=utf-8' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `authors-${selectedRepo?.name || 'repo'}.txt`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                className="btn btn-primary"
+                style={{ fontSize: '0.8rem', padding: '0.4rem 1rem' }}
+              >
+                Download .txt File
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import logging
 import asyncio
 from fastapi import FastAPI, WebSocket, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from datetime import datetime
 from typing import List, Optional, Dict, Any
@@ -18,7 +19,15 @@ import urllib.request
 import base64
 
 # Local imports
-from .models import Base, Source, Repo, Run, Event, Approval, SessionLocal, engine, init_db, Finding, TicketItem
+from .models import Base, Source, Repo, Run, Event, Approval, SessionLocal, engine, init_db, Finding, TicketItem, Mapping
+from .author_mapping import (
+    validate_email,
+    is_unverifiable_domain,
+    check_mapping_warnings,
+    check_unmapped_authors,
+    generate_authors_file_content,
+    parse_authors_file_content
+)
 from sqlalchemy.orm import Session
 from .connectors import (
     SvnConnector, LocalSvnConnector,
@@ -44,6 +53,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Post-migration author and contributor verification cache
+MIGRATION_VERIFICATION_CACHE: Dict[Any, Any] = {}
 
 # Initialize database
 init_db()
@@ -935,6 +947,349 @@ async def decide_mapping(mapping_id: int, approval: GateApproval, db: Session = 
     logger.info(f"D-08: R4 - FR-03+FR-09: Mapping decision {mapping_id}: {approval.decision}")
     return {"outcome": approval.decision, "tier": "T3"}
 
+# --- Contributor / Author Mapping Models & Endpoints (Phase 3 Cartographer) ---
+
+def _resolve_repo_or_migration(id_val: int, db: Session) -> Optional[Repo]:
+    """Resolve a Repo model given either a repo_id or a run_id/migration_id"""
+    repo = db.query(Repo).filter(Repo.id == id_val).first()
+    if repo:
+        return repo
+    run = db.query(Run).filter(Run.id == id_val).first()
+    if run and run.source_ids:
+        repo = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).first()
+        if repo:
+            return repo
+    all_repos = db.query(Repo).all()
+    if len(all_repos) == 1:
+        return all_repos[0]
+    return None
+
+def _discover_authors_for_repo(repo: Repo, db: Session) -> List[Any]:
+    """Extract authors from source repo via VCSAdapter or fallback"""
+    source = repo.source
+    if not source:
+        return []
+    connector = _create_connector(source.type, source.endpoint, source.credentials_ref)
+    if connector and hasattr(connector, "list_authors"):
+        try:
+            authors = connector.list_authors()
+            if authors:
+                return authors
+        except Exception as e:
+            logger.warning(f"Connector list_authors error: {e}")
+            
+    # Direct SVN log fallback
+    if source.type == "svn":
+        from .connectors.base import parse_svn_log_authors
+        cmd = ["svn", "log", "--quiet", "--non-interactive", "--trust-server-cert"]
+        if source.credentials_ref and ":" in source.credentials_ref:
+            u, p = source.credentials_ref.split(":", 1)
+            cmd.extend(["--username", u, "--password", p])
+        elif source.credentials_ref:
+            cmd.extend(["--username", source.credentials_ref])
+        cmd.append(source.endpoint)
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if res.returncode == 0:
+                return parse_svn_log_authors(res.stdout)
+        except Exception as e:
+            logger.warning(f"SVN log command error: {e}")
+    return []
+
+class AuthorMappingItem(BaseModel):
+    username: str
+    name: Optional[str] = None
+    email: Optional[str] = None
+    github_username: Optional[str] = None
+
+class AuthorMappingSaveRequest(BaseModel):
+    mappings: List[AuthorMappingItem]
+
+class AuthorsImportRequest(BaseModel):
+    content: str
+
+@app.get("/migrations/{id}/authors")
+@app.get("/api/repos/{id}/authors")
+@app.get("/api/runs/{id}/authors")
+async def get_migration_authors(id: int, db: Session = Depends(get_db)):
+    """GET /migrations/{id}/authors - Extract unique authors from source history and merge with saved mappings"""
+    repo = _resolve_repo_or_migration(id, db)
+    if not repo:
+        raise HTTPException(status_code=404, detail=f"Migration or Repository with ID {id} not found")
+    
+    discovered = _discover_authors_for_repo(repo, db)
+    
+    # Query DB mappings for this repo
+    db_mappings = db.query(Mapping).filter(Mapping.repo_id == repo.id).all()
+    map_by_user = {m.legacy_id: m for m in db_mappings}
+    
+    authors_data = []
+    discovered_usernames = []
+    
+    for author in discovered:
+        u = author.username
+        discovered_usernames.append(u)
+        m = map_by_user.get(u)
+        
+        name = (m.name if m and m.name else (m.github_id if m and m.github_id else u))
+        email = (m.email if m and m.email else (m.proposed_email if m and m.proposed_email else ""))
+        github_username = (m.github_username if m and m.github_username else (m.github_id if m and m.github_id else ""))
+        is_mapped = bool(email and validate_email(email))
+        
+        authors_data.append({
+            "username": u,
+            "commits": author.commits,
+            "first_commit_date": author.first_commit_date,
+            "last_commit_date": author.last_commit_date,
+            "name": name,
+            "email": email,
+            "github_username": github_username,
+            "status": "mapped" if is_mapped else "unmapped"
+        })
+    
+    # Include any existing DB mappings not in discovered log
+    for legacy_id, m in map_by_user.items():
+        if legacy_id not in discovered_usernames:
+            email = m.email or m.proposed_email or ""
+            is_mapped = bool(email and validate_email(email))
+            authors_data.append({
+                "username": legacy_id,
+                "commits": 0,
+                "first_commit_date": "",
+                "last_commit_date": "",
+                "name": m.name or legacy_id,
+                "email": email,
+                "github_username": m.github_username or m.github_id or "",
+                "status": "mapped" if is_mapped else "unmapped"
+            })
+            discovered_usernames.append(legacy_id)
+            
+    # Check warnings
+    warnings = check_mapping_warnings([
+        {"username": a["username"], "email": a["email"]} for a in authors_data if a["email"]
+    ])
+    
+    # Check unmapped
+    all_mapped, unmapped = check_unmapped_authors(
+        [a["username"] for a in authors_data if a["commits"] > 0] or discovered_usernames,
+        [{"username": a["username"], "email": a["email"]} for a in authors_data]
+    )
+    
+    return {
+        "repo_id": repo.id,
+        "repo_name": repo.name,
+        "total_authors": len(authors_data),
+        "authors": authors_data,
+        "warnings": warnings,
+        "all_mapped": all_mapped,
+        "unmapped_authors": unmapped
+    }
+
+@app.post("/migrations/{id}/authors")
+@app.post("/api/repos/{id}/authors")
+@app.post("/api/runs/{id}/authors")
+async def save_migration_authors(id: int, req: AuthorMappingSaveRequest, db: Session = Depends(get_db)):
+    """POST /migrations/{id}/authors - Persist author mapping model with validation"""
+    repo = _resolve_repo_or_migration(id, db)
+    if not repo:
+        raise HTTPException(status_code=404, detail=f"Migration or Repository with ID {id} not found")
+        
+    # Validate each mapping
+    for item in req.mappings:
+        email = (item.email or "").strip()
+        if email and not validate_email(email):
+            raise HTTPException(status_code=400, detail=f"Invalid email format '{email}' for user '{item.username}'.")
+            
+    # Save or update mappings in DB
+    for item in req.mappings:
+        u = item.username.strip()
+        email = (item.email or "").strip()
+        name = (item.name or u).strip()
+        gh_user = (item.github_username or "").strip()
+        
+        existing = db.query(Mapping).filter(Mapping.repo_id == repo.id, Mapping.legacy_id == u).first()
+        if existing:
+            existing.name = name
+            existing.email = email
+            existing.github_username = gh_user
+            existing.proposed_email = email
+            existing.github_id = gh_user
+            existing.status = "confirmed" if email else "unmapped"
+        else:
+            new_m = Mapping(
+                repo_id=repo.id,
+                legacy_id=u,
+                name=name,
+                email=email,
+                github_username=gh_user,
+                proposed_email=email,
+                github_id=gh_user,
+                status="confirmed" if email else "unmapped",
+                confidence=1.0
+            )
+            db.add(new_m)
+            
+    db.commit()
+    
+    # Calculate warnings and completion status
+    all_in_db = db.query(Mapping).filter(Mapping.repo_id == repo.id).all()
+    mappings_list = [{"username": m.legacy_id, "email": m.email or m.proposed_email or ""} for m in all_in_db]
+    warnings = check_mapping_warnings(mappings_list)
+    
+    discovered = _discover_authors_for_repo(repo, db)
+    disc_users = [a.username for a in discovered]
+    all_mapped, unmapped = check_unmapped_authors(disc_users, mappings_list)
+    
+    return {
+        "status": "saved",
+        "repo_id": repo.id,
+        "count": len(req.mappings),
+        "warnings": warnings,
+        "all_mapped": all_mapped,
+        "unmapped_authors": unmapped
+    }
+
+@app.post("/api/authors/import")
+async def import_authors_file(req: AuthorsImportRequest):
+    """Import git-svn authors.txt file content (username = Name <email>)"""
+    parsed = parse_authors_file_content(req.content)
+    warnings = check_mapping_warnings(parsed)
+    return {
+        "status": "success",
+        "count": len(parsed),
+        "mappings": parsed,
+        "warnings": warnings
+    }
+
+@app.get("/migrations/{id}/authors/export")
+@app.get("/api/repos/{id}/authors/export")
+async def export_authors_file(id: int, db: Session = Depends(get_db)):
+    """Export mappings to git-svn authors.txt format"""
+    repo = _resolve_repo_or_migration(id, db)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repo not found")
+    mappings = db.query(Mapping).filter(Mapping.repo_id == repo.id).all()
+    mappings_list = [
+        {
+            "username": m.legacy_id,
+            "name": m.name or m.github_username or m.legacy_id,
+            "email": m.email or m.proposed_email or ""
+        }
+        for m in mappings
+    ]
+    content = generate_authors_file_content(mappings_list)
+    return PlainTextResponse(
+        content=content,
+        headers={"Content-Disposition": f"attachment; filename=authors-{repo.name}.txt"}
+    )
+
+@app.get("/api/github/user/{username}/noreply")
+@app.get("/api/users/{username}/noreply")
+async def get_github_user_noreply(username: str):
+    """Lookup GitHub user's numeric ID and construct official noreply address"""
+    clean_username = username.strip().lstrip("@")
+    if not clean_username:
+        raise HTTPException(status_code=400, detail="Username cannot be empty")
+        
+    gh_url = f"https://api.github.com/users/{clean_username}"
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "Provenance-AuthorMapping"
+    }
+    pat = os.environ.get("GITHUB_PAT")
+    if pat:
+        headers["Authorization"] = f"Bearer {pat}"
+        
+    try:
+        req = urllib.request.Request(gh_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                user_id = data.get("id")
+                login = data.get("login")
+                name = data.get("name") or login
+                noreply_email = f"{user_id}+{login}@users.noreply.github.com"
+                return {
+                    "username": login,
+                    "id": user_id,
+                    "name": name,
+                    "noreply_email": noreply_email
+                }
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise HTTPException(status_code=404, detail=f"GitHub user '{clean_username}' not found.")
+        elif e.code == 403:
+            raise HTTPException(status_code=429, detail="GitHub API rate limit exceeded. You can manually enter the noreply address.")
+        else:
+            raise HTTPException(status_code=e.code, detail=f"GitHub API error: {e.reason}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to query GitHub API: {str(e)}")
+
+@app.get("/migrations/{id}/contributors-verification")
+@app.get("/api/repos/{id}/contributors-verification")
+@app.get("/api/runs/{id}/contributors-verification")
+async def get_contributors_verification(id: int, db: Session = Depends(get_db)):
+    """GET /migrations/{id}/contributors-verification - Post-migration pre-push author audit and GitHub contributors verification (Req 6)"""
+    repo = _resolve_repo_or_migration(id, db)
+    cache_key = f"repo_{repo.id}" if repo else f"run_{id}"
+    cached = MIGRATION_VERIFICATION_CACHE.get(cache_key) or MIGRATION_VERIFICATION_CACHE.get(id) or {}
+    
+    pre_push = list(cached.get("pre_push_authors") or [])
+    gh_contribs = list(cached.get("github_contributors") or [])
+    
+    # If pre-push author audit not in cache, derive from repo mappings and author history
+    if not pre_push and repo:
+        disc = _discover_authors_for_repo(repo, db)
+        disc_map = {a.username: a for a in disc}
+        db_maps = db.query(Mapping).filter(Mapping.repo_id == repo.id).all()
+        for m in db_maps:
+            email = m.email or m.proposed_email or ""
+            name = m.name or m.legacy_id
+            commits = disc_map.get(m.legacy_id).commits if m.legacy_id in disc_map else 1
+            if email:
+                is_unverifiable = any(dom in email.lower() for dom in ["example.com", "localhost", "test", "local"])
+                pre_push.append({
+                    "author": f"{name} <{email}>",
+                    "commits": commits,
+                    "status": "Linked Profile Email" if not is_unverifiable else "Potential Unlinked / Generic Email",
+                    "is_linked": not is_unverifiable
+                })
+    
+    # If gh_contribs is empty, query GitHub API live
+    if not gh_contribs and repo:
+        token = os.environ.get("GITHUB_PAT", "")
+        run = db.query(Run).order_by(Run.id.desc()).first()
+        target_org = (run.target_org if run and run.target_org else None) or os.environ.get("GITHUB_TARGET_ORG", "octathon-target")
+        clean_name = repo.name.replace("/", "-").replace(" ", "-")
+        if token:
+            try:
+                contrib_url = f"https://api.github.com/repos/{target_org}/{clean_name}/contributors"
+                c_req = urllib.request.Request(contrib_url, headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github.v3+json",
+                    "User-Agent": "Provenance-Migrator"
+                })
+                with urllib.request.urlopen(c_req, timeout=10) as c_resp:
+                    if c_resp.status == 200:
+                        c_data = json.loads(c_resp.read().decode("utf-8"))
+                        gh_contribs = [{
+                            "login": c.get("login"),
+                            "contributions": c.get("contributions"),
+                            "avatar_url": c.get("avatar_url"),
+                            "html_url": c.get("html_url")
+                        } for c in c_data]
+            except Exception as e:
+                logger.info(f"Live GitHub contributors query note: {e}")
+                
+    return {
+        "repo_id": repo.id if repo else id,
+        "repo_name": repo.name if repo else "",
+        "pre_push_authors": pre_push,
+        "github_contributors": gh_contribs,
+        "default_branch": "main",
+        "note": "Only commits on the default branch ('main') count as contributions. GitHub may take a few minutes to recalculate the Insights -> Contributors graph."
+    }
+
 # Phase 3: Gates endpoints
 @app.get("/api/runs/{run_id}/gates")
 async def get_gates(run_id: int, db: Session = Depends(get_db)):
@@ -987,6 +1342,27 @@ async def run_migration(run_id: int, background_tasks: BackgroundTasks, repo_id:
     run = db.query(Run).filter(Run.id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
+
+    target_repos = []
+    if repo_id:
+        r = db.query(Repo).filter(Repo.id == repo_id).first()
+        if r:
+            target_repos.append(r)
+    else:
+        target_repos = db.query(Repo).filter(Repo.source_id.in_(run.source_ids)).all()
+
+    # Requirement 2 & 4: Validate that every discovered author is mapped before migration can run
+    for r in target_repos:
+        discovered = _discover_authors_for_repo(r, db)
+        disc_users = [a.username for a in discovered]
+        db_maps = db.query(Mapping).filter(Mapping.repo_id == r.id).all()
+        mapped_list = [{"username": m.legacy_id, "email": m.email or m.proposed_email or ""} for m in db_maps]
+        all_mapped, unmapped = check_unmapped_authors(disc_users, mapped_list)
+        if not all_mapped:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Migration blocked: Author mapping is incomplete for repository '{r.name}'. Unmapped authors: {', '.join(unmapped)}. Every author must be mapped to a valid email before running."
+            )
     
     run.status = "migrating"
     db.commit()
@@ -1013,9 +1389,40 @@ async def _run_migration_background(run_id: int, target_repo_id: Optional[int] =
             repo_ids = [r.id for r in repos]
         
         for repo_id in repo_ids:
+            repo = db.query(Repo).filter(Repo.id == repo_id).first()
+            if repo:
+                disc = _discover_authors_for_repo(repo, db)
+                disc_users = [a.username for a in disc]
+                db_maps = db.query(Mapping).filter(Mapping.repo_id == repo.id).all()
+                mapped_list = [{"username": m.legacy_id, "email": m.email or m.proposed_email or ""} for m in db_maps]
+                all_mapped, unmapped = check_unmapped_authors(disc_users, mapped_list)
+                if not all_mapped:
+                    err_msg = f"Migration blocked: Author mapping is incomplete for repository '{repo.name}'. Unmapped authors: {', '.join(unmapped)}."
+                    await emit_event(run_id, {
+                        "agent": "Executor",
+                        "action": "Migration Blocked (Unmapped Authors)",
+                        "reason": err_msg,
+                        "tier": "T0"
+                    })
+                    run.status = "failed"
+                    db.commit()
+                    return
+            
             result = await executor.migrate_repo(repo_id)
             logger.info(f"Migration result for repo {repo_id}: {result}")
             
+            # Cache post-migration verification results
+            verification_payload = {
+                "run_id": run_id,
+                "repo_id": repo_id,
+                "pre_push_authors": result.pre_push_authors,
+                "github_contributors": result.github_contributors,
+                "default_branch": "main",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            MIGRATION_VERIFICATION_CACHE[run_id] = verification_payload
+            MIGRATION_VERIFICATION_CACHE[f"repo_{repo_id}"] = verification_payload
+
             # Emit result event
             await emit_event(run_id, {
                 "agent": "Executor",
@@ -1023,6 +1430,15 @@ async def _run_migration_background(run_id: int, target_repo_id: Optional[int] =
                 "reason": f"Commits: {result.commits_pushed}, Tickets: {result.tickets_migrated}, MRs: {result.merge_requests_migrated}, LFS files: {len(result.lfs_files)}",
                 "tier": "T0"
             })
+
+            # Emit post-migration verification event
+            if result.pre_push_authors or result.github_contributors:
+                await emit_event(run_id, {
+                    "agent": "Executor",
+                    "action": "Post-Migration Contributor Verification",
+                    "reason": f"Audited {len(result.pre_push_authors)} git authors pre-push. Verified {len(result.github_contributors)} GitHub contributors on default branch 'main'.",
+                    "tier": "T0"
+                })
         
         run.status = "migrated"
         db.commit()

@@ -8,10 +8,10 @@ import os
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from .base import SourceConnector, RepoDescriptor, ConnectionReport, run_cmd
+from .base import SourceConnector, VCSAdapter, RepoDescriptor, ConnectionReport, AuthorInfo, parse_svn_log_authors, run_cmd
 
-class SvnConnector(SourceConnector):
-    """SVN source connector - metadata-only discovery"""
+class SvnConnector(VCSAdapter):
+    """SVN source connector - metadata-only discovery and VCSAdapter"""
     
     def __init__(self, repo_url: str, username: str = "", password: str = ""):
         self.repo_url = repo_url
@@ -204,6 +204,19 @@ class SvnConnector(SourceConnector):
     def inspect(self, repo: RepoDescriptor) -> Dict[str, Any]:
         """Detailed inspection for Assessor (Phase 2)"""
         return {"repo": repo.name, "details": "T0 inspection complete"}
+
+    def list_authors(self, repo_url: Optional[str] = None) -> List[AuthorInfo]:
+        """Extract unique list of authors from SVN history with commit count, first/last commit date"""
+        target_url = repo_url or self.repo_url
+        try:
+            cmd = self._svn_cmd(["log", "--quiet", target_url])
+            res = run_cmd(cmd, timeout=30)
+            if res.returncode == 0:
+                return parse_svn_log_authors(res.stdout)
+        except Exception:
+            pass
+        return []
+
 
 
 class LocalSvnConnector(SvnConnector):

@@ -33,6 +33,17 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def init_db():
     """Initialize database tables"""
     Base.metadata.create_all(bind=engine)
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            cols = [r[1] for r in conn.execute(text('PRAGMA table_info(mappings)')).fetchall()]
+            for new_col in ['name', 'email', 'github_username', 'run_id']:
+                if new_col not in cols:
+                    conn.execute(text(f'ALTER TABLE mappings ADD COLUMN {new_col} VARCHAR(200)'))
+            conn.commit()
+    except Exception:
+        pass
+
 
 class Source(Base):
     __tablename__ = "sources"
@@ -88,12 +99,16 @@ class Mapping(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     repo_id = Column(Integer, ForeignKey("repos.id"), nullable=False)
-    legacy_id = Column(String(200), nullable=False)
-    github_id = Column(String(200), nullable=False)
-    proposed_email = Column(String(200), nullable=True)
+    run_id = Column(Integer, nullable=True)
+    legacy_id = Column(String(200), nullable=False)  # source username
+    name = Column(String(200), nullable=True)        # full name
+    email = Column(String(200), nullable=True)       # author email
+    github_username = Column(String(200), nullable=True)  # optional GitHub login
+    github_id = Column(String(200), nullable=True)   # backward compatibility
+    proposed_email = Column(String(200), nullable=True)   # backward compatibility
     method = Column(String(50), default="exact_match")
-    confidence = Column(Float, default=0.0)
-    status = Column(String(20), default="pending")
+    confidence = Column(Float, default=1.0)
+    status = Column(String(20), default="confirmed")
     coverage_percent = Column(Float, default=0.0)
     
     repo = relationship("Repo", back_populates="mappings")

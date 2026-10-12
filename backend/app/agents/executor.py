@@ -30,6 +30,8 @@ class MigrationResult:
     tickets_migrated: int = 0
     merge_requests_migrated: int = 0
     tickets_details: List[Dict[str, Any]] = field(default_factory=list)
+    pre_push_authors: List[Dict[str, Any]] = field(default_factory=list)
+    github_contributors: List[Dict[str, Any]] = field(default_factory=list)
 
 class ExecutorAgent:
     """Executes migration with git-svn, author rewrite, LFS self-heal"""
@@ -121,7 +123,7 @@ class ExecutorAgent:
                 return MigrationResult(success=False, commits_pushed=0, refs_updated=[], lfs_files=[], errors=[str(e)])
     
     async def _clone_svn(self, source, repo_path: Path, repo_id: Optional[int] = None):
-        """Clone SVN repo using git-svn with robust layout detection, author self-healing, and graceful fallbacks"""
+        """Clone SVN repo using git-svn with --stdlayout and strict --authors-file mapping"""
         svn_url = source.endpoint
         if not svn_url.startswith(("file://", "http://", "https://", "svn://")):
             svn_url = f"file://{os.path.abspath(svn_url)}"
@@ -140,86 +142,31 @@ class ExecutorAgent:
             prime_cmd.append(svn_url)
             subprocess.run(prime_cmd, capture_output=True, text=True, timeout=30)
 
+        # Requirement 4: Generate authors file from saved mapping and pass to conversion
+        # Never fall back to token owner. If an author is unmapped, fail with an error instead.
         authors_file = Path(self._generate_authors_file(repo_path.parent, source, repo_id=repo_id))
-
-        def _add_missing_author(missing_name: str):
-            clean = missing_name.strip()
-            if not clean:
-                return
-            entry = f"{clean} = {clean} <{clean}@users.noreply.github.com>\n"
-            try:
-                if authors_file.exists():
-                    current = authors_file.read_text(encoding="utf-8")
-                    if clean not in current:
-                        authors_file.write_text(current + entry, encoding="utf-8")
-                else:
-                    authors_file.write_text(entry, encoding="utf-8")
-            except Exception:
-                pass
-
-        async def _run_git_svn_healing(cmd_args: list, max_retries: int = 8) -> subprocess.CompletedProcess:
-            res = None
-            for attempt in range(max_retries):
-                if repo_path.exists():
-                    shutil.rmtree(repo_path, ignore_errors=True)
-                res = subprocess.run(cmd_args, capture_output=True, text=True, timeout=300)
-                if res.returncode == 0:
-                    return res
-                combined = (res.stderr or "") + " " + (res.stdout or "")
-                match = re.search(r"Author:\s+([^\s]+)\s+not defined in", combined)
-                if match:
-                    missing = match.group(1).strip()
-                    await self._emit(f"Auto-healed unmapped SVN author '{missing}' -> {missing}@users.noreply.github.com (T0)", "T0")
-                    _add_missing_author(missing)
-                    continue
-                return res
-            return res
 
         base_cmd = ["git", "svn", "clone"]
         if username:
             base_cmd.extend(["--username", username])
 
-        # Strategy 1: Standard layout with authors-file
-        cmd_std = list(base_cmd)
-        if authors_file.exists():
-            cmd_std.extend(["--authors-file", str(authors_file)])
-        cmd_std.extend(["--stdlayout", "--no-metadata", svn_url, str(repo_path)])
-        
-        result = await _run_git_svn_healing(cmd_std)
-        if result.returncode == 0:
-            return
-
-        # Strategy 2: Flat layout with authors-file
-        cmd_flat = list(base_cmd)
-        if authors_file.exists():
-            cmd_flat.extend(["--authors-file", str(authors_file)])
-        cmd_flat.extend(["--no-metadata", svn_url, str(repo_path)])
-        
-        result2 = await _run_git_svn_healing(cmd_flat)
-        if result2.returncode == 0:
-            return
-
-        # Strategy 3: Standard layout WITHOUT authors-file (guarantees clone succeeds without halting on unknown authors)
-        await self._emit("Retrying SVN clone without --authors-file (author identities mapped via mailmap)", "T0")
+        # Attempt 1: Standard layout with authors-file
+        cmd_std = list(base_cmd) + ["--authors-file", str(authors_file), "--stdlayout", "--no-metadata", svn_url, str(repo_path)]
         if repo_path.exists():
             shutil.rmtree(repo_path, ignore_errors=True)
-        cmd_no_auth_std = list(base_cmd) + ["--stdlayout", "--no-metadata", svn_url, str(repo_path)]
-        result3 = subprocess.run(cmd_no_auth_std, capture_output=True, text=True, timeout=300)
-        if result3.returncode == 0:
+        res = subprocess.run(cmd_std, capture_output=True, text=True, timeout=300)
+        if res.returncode == 0:
             return
 
-        # Strategy 4: Flat layout WITHOUT authors-file
+        # Attempt 2: Flat layout with authors-file (for flat SVN repositories without standard trunk/branches)
         if repo_path.exists():
             shutil.rmtree(repo_path, ignore_errors=True)
-        cmd_no_auth_flat = list(base_cmd) + ["--no-metadata", svn_url, str(repo_path)]
-        result4 = subprocess.run(cmd_no_auth_flat, capture_output=True, text=True, timeout=300)
-        if result4.returncode == 0:
+        cmd_flat = list(base_cmd) + ["--authors-file", str(authors_file), "--no-metadata", svn_url, str(repo_path)]
+        res_flat = subprocess.run(cmd_flat, capture_output=True, text=True, timeout=300)
+        if res_flat.returncode == 0:
             return
 
-        err_msg = (result2.stderr if result2 and result2.stderr else None) or \
-                  (result.stderr if result and result.stderr else None) or \
-                  (result4.stderr if result4 and result4.stderr else None) or \
-                  (result3.stderr if result3 and result3.stderr else "Unknown git-svn clone error")
+        err_msg = (res_flat.stderr or "").strip() or (res.stderr or "").strip() or (res.stdout or "").strip()
         raise Exception(f"git svn clone failed: {err_msg}")
     
     async def _clone_localgit(self, source, repo_path: Path):
@@ -291,78 +238,62 @@ class ExecutorAgent:
             subprocess.run(["git", "branch", "-M", "main"], cwd=repo_path, capture_output=True)
     
     def _generate_authors_file(self, target_dir: Optional[Path] = None, source = None, repo_id: Optional[int] = None) -> str:
-        """Generate authors file for git-svn with 100% committer coverage"""
+        """Generate authors file for git-svn strictly from saved mappings. Blocks if unmapped."""
         out_dir = target_dir or Path(tempfile.gettempdir())
         authors_file = out_dir / "authors.txt"
         
-        # Pull from DB mappings if available
         from app.models import Mapping
-        mappings = self.db.query(Mapping).all()
-        known_authors = {}
-        for m in mappings:
-            email = getattr(m, 'proposed_email', f"{m.legacy_id}@users.noreply.github.com") or f"{m.legacy_id}@users.noreply.github.com"
-            gh_id = m.github_id or m.legacy_id
-            known_authors[m.legacy_id] = f"{gh_id} <{email}>"
-
-        # If repo_id is provided, pull Cartographer author proposals dynamically
-        if repo_id:
-            try:
-                from app.agents.cartographer import CartographerAgent
-                cartographer = CartographerAgent(self.db)
-                proposals = cartographer.map_authors(repo_id)
-                for p in proposals:
-                    if p.legacy_id not in known_authors:
-                        known_authors[p.legacy_id] = f"{p.proposed_login} <{p.proposed_email}>"
-            except Exception:
-                pass
+        from app.author_mapping import validate_email, generate_authors_file_content, check_unmapped_authors
         
-        # Inject username from credentials_ref directly
-        if source and source.credentials_ref:
-            parts = source.credentials_ref.split(":", 1)
-            u = parts[0].strip()
-            if u and u not in known_authors:
-                known_authors[u] = f"{u} <{u}@users.noreply.github.com>"
-        
-        # If source is provided, extract all authors dynamically from svn log
+        # 1. Discover authors from source history
+        discovered_authors = []
         if source and source.type == "svn":
-            try:
-                cmd = ["svn", "log", "--quiet", "--non-interactive", "--trust-server-cert"]
-                if source.credentials_ref:
-                    parts = source.credentials_ref.split(":", 1)
-                    if len(parts) >= 1 and parts[0]:
-                        cmd.extend(["--username", parts[0]])
-                    if len(parts) >= 2 and parts[1]:
-                        cmd.extend(["--password", parts[1]])
-                cmd.append(source.endpoint)
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
-                if res.returncode == 0:
-                    for line in res.stdout.splitlines():
-                        if "|" in line:
-                            parts = [p.strip() for p in line.split("|")]
-                            if len(parts) >= 2 and parts[1]:
-                                auth = parts[1]
-                                if auth not in known_authors:
-                                    known_authors[auth] = f"{auth} <{auth}@users.noreply.github.com>"
-            except Exception:
-                pass
+            from app.connectors.svn import SvnConnector
+            conn = SvnConnector(source.endpoint, "", "")
+            if source.credentials_ref and ":" in source.credentials_ref:
+                u, p = source.credentials_ref.split(":", 1)
+                conn.username, conn.password = u, p
+            elif source.credentials_ref:
+                conn.username = source.credentials_ref
+            discovered = conn.list_authors()
+            discovered_authors = [a.username for a in discovered]
 
-        # Standard system & generic fallbacks
-        defaults = [
-            ("root", "Admin <admin@users.noreply.github.com>"),
-            ("admin", "Admin <admin@users.noreply.github.com>"),
-            ("administrator", "Administrator <administrator@users.noreply.github.com>"),
-            ("svn", "SVN <svn@users.noreply.github.com>"),
-            ("visualsvn", "VisualSVN <visualsvn@users.noreply.github.com>"),
-            ("(no author)", "Unknown <unknown@users.noreply.github.com>"),
-            ("anonymous", "Anonymous <anonymous@users.noreply.github.com>"),
-            ("nobody", "Nobody <nobody@users.noreply.github.com>"),
-        ]
-        for k, v in defaults:
-            if k not in known_authors:
-                known_authors[k] = v
+        # 2. Query mappings from DB
+        query = self.db.query(Mapping)
+        if repo_id:
+            query = query.filter(Mapping.repo_id == repo_id)
+        db_mappings = query.all()
+        
+        # If none found for repo_id, check all mappings
+        if not db_mappings and repo_id:
+            db_mappings = self.db.query(Mapping).all()
+            
+        mapped_dict = {}
+        for m in db_mappings:
+            u = (m.legacy_id or "").strip()
+            email = (m.email or m.proposed_email or "").strip()
+            name = (m.name or m.github_username or u).strip()
+            if u and email and validate_email(email):
+                mapped_dict[u] = {
+                    "username": u,
+                    "name": name,
+                    "email": email,
+                    "github_username": m.github_username or m.github_id
+                }
 
-        lines = [f"{k} = {v}" for k, v in known_authors.items()]
-        authors_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # 3. Check for unmapped discovered authors (Requirement 2 & 4)
+        if discovered_authors:
+            all_mapped, unmapped = check_unmapped_authors(discovered_authors, list(mapped_dict.values()))
+            if not all_mapped:
+                raise ValueError(
+                    f"Migration blocked: Author mapping is incomplete. Unmapped SVN authors: {', '.join(unmapped)}. Every author must be mapped to a valid email before migration."
+                )
+
+        if not mapped_dict:
+            raise ValueError("No author mappings found. Complete contributor mapping before executing migration.")
+
+        content = generate_authors_file_content(list(mapped_dict.values()))
+        authors_file.write_text(content, encoding="utf-8")
         return str(authors_file)
     
     def _ensure_github_repo_exists(self, org: str, repo_name: str, token: str):
@@ -515,13 +446,78 @@ class ExecutorAgent:
         else:
             target_url = f"https://github.com/{target_org}/{clean_name}.git"
         
+        # Ensure default branch is main
+        try:
+            cur_b = subprocess.run(["git", "branch", "--show-current"], cwd=repo_path, capture_output=True, text=True).stdout.strip()
+            if cur_b in ["master", "trunk"] or not cur_b:
+                subprocess.run(["git", "branch", "-M", "main"], cwd=repo_path, capture_output=True)
+        except Exception:
+            pass
+
+        # Requirement 6: Run git log --format="%an <%ae>" before pushing and show summary
+        pre_push_summary = []
+        try:
+            log_proc = subprocess.run(
+                ["git", "log", "--format=%an|%ae"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True
+            )
+            author_counts = {}
+            for line in log_proc.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("|", 1)
+                name = parts[0].strip()
+                email = parts[1].strip() if len(parts) > 1 else ""
+                key = f"{name} <{email}>"
+                author_counts[key] = author_counts.get(key, 0) + 1
+
+            for author_str, count in author_counts.items():
+                is_unverifiable = any(dom in author_str.lower() for dom in ["example.com", "localhost", "test", "local"])
+                has_email = "@" in author_str and not author_str.endswith("<>")
+                status_note = "Linked Profile Email" if (has_email and not is_unverifiable) else "Potential Unlinked / Generic Email"
+                pre_push_summary.append({
+                    "author": author_str,
+                    "commits": count,
+                    "status": status_note
+                })
+
+            await self._emit(
+                f"Author Verification (Pre-Push): Found {len(author_counts)} distinct author identities across {sum(author_counts.values())} commits in converted Git history.",
+                "T0"
+            )
+            for it in pre_push_summary:
+                await self._emit(f"  • {it['author']}: {it['commits']} commits ({it['status']})", "T0")
+        except Exception as e:
+            logger.warning(f"Pre-push author audit error: {e}")
+
         # Add remote
         subprocess.run(["git", "remote", "remove", "target"], cwd=repo_path, capture_output=True)
         subprocess.run(["git", "remote", "add", "target", target_url], cwd=repo_path, capture_output=True)
         
         max_retries = 3
         for attempt in range(max_retries):
-            # Push all branches
+            # Requirement 5: Push the default branch ('main') first, then branches and tags
+            main_res = subprocess.run(
+                ["git", "push", "-u", "target", "main"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            if main_res.returncode != 0:
+                # If -u target main failed, try git push target main
+                main_res = subprocess.run(
+                    ["git", "push", "target", "main"],
+                    cwd=repo_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+
+            # Then push all branches
             result = subprocess.run(
                 ["git", "push", "target", "--all"],
                 cwd=repo_path,
@@ -530,7 +526,7 @@ class ExecutorAgent:
                 timeout=120
             )
             
-            if result.returncode == 0:
+            if result.returncode == 0 or main_res.returncode == 0:
                 # Push tags as well
                 subprocess.run(
                     ["git", "push", "target", "--tags"],
@@ -539,6 +535,44 @@ class ExecutorAgent:
                     text=True,
                     timeout=120
                 )
+
+                # Requirement 6: Post-migration verification - call GET /repos/{owner}/{repo}/contributors
+                github_contributors = []
+                if token:
+                    try:
+                        contrib_url = f"https://api.github.com/repos/{target_org}/{clean_name}/contributors"
+                        c_req = urllib.request.Request(contrib_url, headers={
+                            "Authorization": f"Bearer {token}",
+                            "Accept": "application/vnd.github.v3+json",
+                            "User-Agent": "Provenance-Migrator"
+                        })
+                        with urllib.request.urlopen(c_req, timeout=15) as c_resp:
+                            if c_resp.status == 200:
+                                c_data = json.loads(c_resp.read().decode("utf-8"))
+                                for c in c_data:
+                                    github_contributors.append({
+                                        "login": c.get("login"),
+                                        "contributions": c.get("contributions"),
+                                        "avatar_url": c.get("avatar_url"),
+                                        "html_url": c.get("html_url")
+                                    })
+                                c_str = ", ".join(f"@{c['login']} ({c['contributions']} commits)" for c in github_contributors)
+                                await self._emit(
+                                    f"GitHub Contributors Verified: {c_str or '0 indexed yet'}. (Note: GitHub may take a few minutes to recalculate Insights -> Contributors graph; only commits on default branch count as contributions).",
+                                    "T0"
+                                )
+                            elif c_resp.status == 202:
+                                await self._emit(
+                                    "GitHub Contributors Verified: GitHub returned 202 Accepted (computing contributor metrics). Only commits on default branch 'main' count toward the Contributors graph.",
+                                    "T0"
+                                )
+                    except Exception as e:
+                        logger.warning(f"Post-push contributors query error: {e}")
+                        await self._emit(
+                            f"GitHub Contributors: Query finished ({e}). Note that GitHub may take several minutes to recalculate Contributors after an initial push.",
+                            "T0"
+                        )
+
                 # Success
                 commits = self._count_commits(repo_path)
                 refs = self._get_refs(repo_path)
@@ -548,25 +582,28 @@ class ExecutorAgent:
                     commits_pushed=commits,
                     refs_updated=refs,
                     lfs_files=lfs_files,
-                    errors=[]
+                    errors=[],
+                    pre_push_authors=pre_push_summary,
+                    github_contributors=github_contributors
                 )
             
             # Check for known error signatures
-            error_output = result.stderr
+            error_output = result.stderr or main_res.stderr or ""
             fix_applied = await self._apply_known_fix(error_output, repo_path, repo)
             
             if not fix_applied:
                 # Unknown error - escalate to T2/T3
-                await self._emit(f"Unknown push error: {error_output}", "T2")
+                await self._emit(f"Push error: {error_output}", "T2")
                 return MigrationResult(
                     success=False,
                     commits_pushed=0,
                     refs_updated=[],
                     lfs_files=[],
-                    errors=[error_output]
+                    errors=[error_output],
+                    pre_push_authors=pre_push_summary
                 )
         
-        return MigrationResult(success=False, commits_pushed=0, refs_updated=[], lfs_files=[], errors=["Max retries exceeded"])
+        return MigrationResult(success=False, commits_pushed=0, refs_updated=[], lfs_files=[], errors=["Max retries exceeded"], pre_push_authors=pre_push_summary)
     
     async def _apply_known_fix(self, error_output: str, repo_path: Path, repo) -> bool:
         """Apply T0 known-fix for known error signatures"""

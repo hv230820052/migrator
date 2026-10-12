@@ -6,10 +6,10 @@ import subprocess
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from .base import SourceConnector, RepoDescriptor, ConnectionReport, run_cmd
+from .base import SourceConnector, VCSAdapter, RepoDescriptor, ConnectionReport, AuthorInfo, run_cmd
 
-class LocalGitConnector(SourceConnector):
-    """Local Git connector - scans filesystem for repositories"""
+class LocalGitConnector(VCSAdapter):
+    """Local Git connector - scans filesystem for repositories and VCSAdapter"""
     
     def __init__(self, root_path: str):
         import os
@@ -158,6 +158,44 @@ class LocalGitConnector(SourceConnector):
         """Detailed inspection for Assessor (Phase 2)"""
         return {"repo": repo.name, "details": "T0 inspection complete"}
 
+    def list_authors(self, repo_url: Optional[str] = None) -> List[AuthorInfo]:
+        """Extract unique list of authors from Git history"""
+        target = Path(repo_url) if repo_url else self.root_path
+        git_dir = target / ".git" if (target / ".git").exists() else target
+        if not git_dir.exists():
+            return []
+        try:
+            cmd = ["git", "--git-dir", str(git_dir), "log", "--format=%an|%ad", "--date=iso"]
+            res = run_cmd(cmd, timeout=20)
+            if res.returncode == 0:
+                authors_data: Dict[str, Dict[str, Any]] = {}
+                for line in res.stdout.splitlines():
+                    if "|" in line:
+                        an, ad = line.split("|", 1)
+                        an, ad = an.strip(), ad.strip()
+                        if not an:
+                            continue
+                        if an not in authors_data:
+                            authors_data[an] = {"username": an, "commits": 0, "dates": []}
+                        authors_data[an]["commits"] += 1
+                        if ad:
+                            authors_data[an]["dates"].append(ad)
+                result = []
+                for username, data in authors_data.items():
+                    dates = sorted(data["dates"])
+                    result.append(AuthorInfo(
+                        username=username,
+                        commits=data["commits"],
+                        first_commit_date=dates[0] if dates else None,
+                        last_commit_date=dates[-1] if dates else None
+                    ))
+                result.sort(key=lambda x: x.commits, reverse=True)
+                return result
+        except Exception:
+            pass
+        return []
+
+
 
 class GitHubConnector(SourceConnector):
     """GitHub source connector - uses GitHub REST API"""
@@ -295,7 +333,7 @@ class GitHubConnector(SourceConnector):
         return {"repo": repo.name, "details": "T0 inspection complete"}
 
 
-class GitRemoteConnector(SourceConnector):
+class GitRemoteConnector(VCSAdapter):
     """Generic remote Git connector for GitLab, Bitbucket, Azure Repos, etc."""
     def __init__(self, endpoint: str, credentials_ref: Optional[str] = None, source_type: str = "git"):
         self.endpoint = endpoint
@@ -355,6 +393,10 @@ class GitRemoteConnector(SourceConnector):
 
     def inspect(self, repo: RepoDescriptor) -> Dict[str, Any]:
         return {"repo": repo.name, "details": f"{self.source_type.upper()} inspection complete"}
+
+    def list_authors(self, repo_url: Optional[str] = None) -> List[AuthorInfo]:
+        """Extract unique list of authors using git log if cloned or empty list"""
+        return []
 
 
 class TfsSampleConnector(SourceConnector):
