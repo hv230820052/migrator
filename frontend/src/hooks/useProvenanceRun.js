@@ -446,6 +446,12 @@ export function useProvenanceRun(initialRunId = 1) {
     return handleConnectAndDiscover();
   };
 
+  // Legacy autonomous method preserved for backward-compatibility
+  const handleRunFullGoldenPath = async (overrideType, overrideEndpoint, overrideCreds, overrideOrg) => {
+    await handleConnectAndDiscover(overrideType, overrideEndpoint, overrideCreds, overrideOrg);
+    await handleRunFullPipeline();
+  };
+
   // Clear all database tables for a clean slate
   const handleClearDatabase = async () => {
     if (!window.confirm("Are you sure you want to clear the database? All sources, repos, findings, and runs will be reset.")) return;
