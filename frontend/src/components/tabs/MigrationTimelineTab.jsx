@@ -1758,7 +1758,10 @@ export function MigrationTimelineTab({
             return (
               <div
                 key={stage.id}
-                onClick={() => setActiveInspectorStage(stage.id)}
+                onClick={() => {
+                  setActiveInspectorStage(stage.id);
+                  document.getElementById('timeline-stage-inspector')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }}
                 className={isRunning ? 'timeline-node-running' : ''}
                 style={{
                   padding: '1rem 0.75rem',
@@ -1813,7 +1816,7 @@ export function MigrationTimelineTab({
         </div>
 
         {/* Action Controls for Current Stage */}
-        <div style={{ background: 'var(--canvas-bg)', padding: '0.9rem 1.25rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1.75rem' }}>
+        <div id="timeline-stage-inspector" style={{ background: 'var(--canvas-bg)', padding: '0.9rem 1.25rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1.75rem' }}>
           <div style={{ fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
             Current Inspector View: <strong style={{ color: 'var(--text-primary)' }}>{TIMELINE_STAGES.find(s => s.id === activeInspectorStage)?.title}</strong>
           </div>

@@ -93,7 +93,7 @@ export default function App() {
     });
   };
 
-  const approvedGatesCount = gates.filter((g) => g.status === 'approved').length;
+  const approvedGatesCount = gates.filter((g) => g.status === 'approved' || g.status === 'approve').length;
 
   return (
     <div className="app-shell">

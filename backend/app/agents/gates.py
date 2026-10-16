@@ -39,11 +39,11 @@ class GatesAgent:
         
         return {
             "gate": gate.value,
-            "status": approval.decision,
+            "status": "approved" if approval.decision in ["approved", "approve"] else approval.decision,
             "actor": approval.actor,
             "reason": approval.reason,
             "timestamp": approval.timestamp.isoformat() if approval.timestamp else None,
-            "can_proceed": approval.decision == "approved"
+            "can_proceed": approval.decision in ["approved", "approve"]
         }
     
     def get_all_gates(self, run_id: int) -> List[Dict]:
@@ -105,7 +105,7 @@ class GatesAgent:
         for i in range(gate_idx):
             prev_gate = self.GATE_ORDER[i]
             approval = self._get_approval(run_id, prev_gate)
-            if not approval or approval.decision != "approve":
+            if not approval or approval.decision not in ["approve", "approved"]:
                 return False
         return True
     

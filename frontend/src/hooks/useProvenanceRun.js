@@ -13,11 +13,20 @@ const fetchJson = async (url) => {
 export function useProvenanceRun(initialRunId = 1) {
   const queryClient = useQueryClient();
   const [runId, setRunId] = useState(initialRunId);
+  const resolveTabHash = (hash) => {
+    const validTabs = ['timeline', 'waves', 'control-room', 'catalog', 'ci-translator', 'proof'];
+    if (validTabs.includes(hash)) return hash;
+    if (hash === 'parity-proof' || hash === 'certificate' || hash === 'parity') return 'proof';
+    if (hash === 'control' || hash === 'live-bus') return 'control-room';
+    if (hash === 'waves-plan' || hash === 'portfolio') return 'waves';
+    return null;
+  };
+
   const getInitialTab = () => {
     if (typeof window !== 'undefined' && window.location.hash) {
       const hash = window.location.hash.replace('#', '').trim();
-      const validTabs = ['timeline', 'waves', 'control-room', 'catalog', 'ci-translator', 'proof'];
-      if (validTabs.includes(hash)) return hash;
+      const resolved = resolveTabHash(hash);
+      if (resolved) return resolved;
     }
     return 'timeline';
   };
@@ -33,9 +42,9 @@ export function useProvenanceRun(initialRunId = 1) {
   useEffect(() => {
     const handleHash = () => {
       const hash = window.location.hash.replace('#', '').trim();
-      const validTabs = ['timeline', 'waves', 'control-room', 'catalog', 'ci-translator', 'proof'];
-      if (validTabs.includes(hash)) {
-        setActiveTabState(hash);
+      const resolved = resolveTabHash(hash);
+      if (resolved) {
+        setActiveTabState(resolved);
       }
     };
     window.addEventListener('popstate', handleHash);
@@ -188,6 +197,38 @@ export function useProvenanceRun(initialRunId = 1) {
     },
     refetchInterval: (isAutoRunning || stageStatuses.executor === 'running' || stageStatuses.prover === 'running') ? 2000 : false,
   });
+
+  // Intelligent stage status hydration on load/refresh
+  useEffect(() => {
+    if (isAutoRunning) return;
+    setStageStatuses(prev => {
+      const next = { ...prev };
+      if (catalog.length > 0 && next.scout === 'pending') {
+        next.scout = 'completed';
+      }
+      if (findings && findings.length > 0 && next.curator === 'pending') {
+        next.curator = 'completed';
+      }
+      const activeRepo = catalog.find(r => r.id === activeRepoId);
+      if (activeRepo && activeRepo.risk_tier && activeRepo.risk_tier !== 'PENDING' && next.assessor === 'pending') {
+        next.assessor = 'completed';
+      }
+      if (mappings && mappings.length > 0 && next.cartographer === 'pending') {
+        next.cartographer = 'completed';
+      }
+      const allGatesApproved = gates.length >= 4 && gates.every(g => g.status === 'approved' || g.status === 'approve');
+      if (allGatesApproved && next.gates === 'pending') {
+        next.gates = 'completed';
+      }
+      if ((fidelity?.verified || certificate) && next.executor === 'pending') {
+        next.executor = 'completed';
+      }
+      if ((certificate || fidelity?.verified) && next.prover === 'pending') {
+        next.prover = 'completed';
+      }
+      return next;
+    });
+  }, [catalog, findings, mappings, gates, fidelity, certificate, activeRepoId, isAutoRunning]);
 
   // WebSocket Connection for streaming real-time event logs
   useEffect(() => {

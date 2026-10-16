@@ -74,10 +74,13 @@ export function Sidebar({
     if (isMobileOpen) {
       onCloseMobile();
     }
+    setTimeout(() => {
+      document.getElementById('timeline-stage-inspector')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 120);
   };
 
   const getStageStatusIcon = (status) => {
-    if (status === 'done') {
+    if (status === 'done' || status === 'completed') {
       return <CheckCircle2 style={{ width: '12px', height: '12px', color: 'var(--status-success)', flexShrink: 0 }} />;
     }
     if (status === 'running') {
